@@ -68,6 +68,18 @@ const config: Config = {
     ],
   ],
 
+  plugins: [
+    [
+      '@docusaurus/plugin-content-docs',
+      {
+        id: 'graph-chain',
+        path: 'graph-chain', //文档目录
+        routeBasePath: 'graph-chain', //路由前缀
+        sidebarPath: './sidebars.ts'//require.resolve('./sidebars/api.ts'),
+      },
+    ],
+  ],
+
   themeConfig: {
     // Replace with your project's social card
     image: 'img/docusaurus-social-card.jpg',
@@ -84,8 +96,16 @@ const config: Config = {
         {
           type: 'docSidebar',
           sidebarId: 'tutorialSidebar',
-          position: 'left',
           label: 'Tutorial',
+          position: 'left',
+        },
+        {
+          type: 'doc', 
+          label: 'graph-chain',        //顶部导航栏的名字
+          position: 'left',            //从左到右排列
+          docsPluginId: 'graph-chain',  //就是前面plugins里的id,
+          docId: 'intro',                //  好像就是默认匹配的那个文档
+          //sidebarId: 'graphSidebar',   //这个就是sideBar里面配置的sidebar， 因为这里的类型是doc， 不用再配置侧边栏
         },
         {to: '/blog', label: 'Blog', position: 'left'},
         {
