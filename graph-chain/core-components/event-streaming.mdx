@@ -1,0 +1,120 @@
+---
+sidebar_position: 2
+---
+
+# 事件流
+
+LangChain agent是基于LangGraph构建的，因此它们支持相同的流堆栈，对message、tool calling、state和自定义更新进行以agent为中心的投影。
+
+对于大多数应用程序和前端用例，通过stream_events使用事件流(…，version=“v3”)。事件流返回一个带有类型化投影的run对象，因此每个投影都可以独立使用，
+而无需解析流模式元组(stream-mode tuples)。
+
+```js
+from langchain.agents import create_agent
+
+def get_weather(city: str) -> str:
+    """Get weather for a city."""
+    return f"It's always sunny in {city}!"
+
+agent = create_agent(
+    model="gpt-5-nano",
+    tools=[get_weather],
+)
+
+stream = agent.stream_events({
+    "messages": [{"role": "user", "content": "What is the weather in SF?"}],
+}, version="v3")
+
+for message in stream.messages:
+    for delta in message.text:
+        print(delta, end="", flush=True)
+
+final_state = stream.output
+```
+## 你可以流什么
+
+| Projection | Use |
+|---|---|
+| for event in stream  | Raw protocol events with full envelope and access to every channel. |
+| stream.messages      | Model message streams, one per LLM call.   |
+| message.text         | Text deltas and final text for a message.  |
+| message.reasoning    | Reasoning deltas for models that expose reasoning content. |
+| message.tool_calls   | Tool-call argument chunks and finalized tool calls. |
+| message.output       | Final message object after the model call completes.    |
+| stream.values        | Agent state snapshots. |
+| stream.output        | Final agent state. |
+| stream.subgraphs     | Nested graph runs (sub-agents and plain subgraphs). |
+| stream.extensions    | Custom transformer projections  |
+| stream.tool_calls    | Tool execution lifecycle, inputs, output deltas, final output, and errors. |
+
+stream.messages生成ChatModelStream对象。每个消息流都公开.text、.rreasong、.tool_calls和.output。同步投影可以迭代获取实时增量，
+也可以排空以获取最终值：对于最终文本使用str（message.text），对于最终的工具调用使用message.tool_calls.get（）。
+
+## agent messages
+当你希望每次LLM调用都获取模型输出时，请使用stream.messages。
+
+```js
+stream = agent.stream_events(input, version="v3")
+
+for message in stream.messages:
+    print(f"[{message.node}] ", end="")
+    for delta in message.text:
+        print(delta, end="", flush=True)
+
+    full_message = message.output
+    usage = full_message.usage_metadata
+    if usage:
+        print(usage)
+```
+
+message.output为你提供最终的AI message，包括特定于模型提供商的内容块。在TypeScript中，当你只需要token数或其它用量元数据时，使用message.usage；
+在Python中，从message.output.usage_metadata中读取利用率。
+
+## 推理内容
+
+推理内容使用与文本内容相同的shape，但只有当所选模型发出推理块时，它才可用。
+
+```js
+stream = agent.stream_events(input, version="v3")
+
+for message in stream.messages:
+    for delta in message.reasoning:
+        print(f"[thinking] {delta}", end="", flush=True)
+
+    for delta in message.text:
+        print(delta, end="", flush=True)
+```
+
+## tool调用
+
+有两种有用的tool调用投影：
+
+- message.toolcalls在模型生成工具调用时流式传输工具调用参数块。
+- stream.toolcalls在工具调用开始后流式传输工具执行的生命周期。
+
+```js
+stream = agent.stream_events(input, version="v3")
+
+for message in stream.messages:
+    for chunk in message.tool_calls:
+        print(f"tool call chunk: {chunk}")
+
+    finalized = message.tool_calls.get()
+    if finalized:
+        print(f"finalized tool calls: {finalized}")
+
+for call in stream.tool_calls:
+    print(f"{call.tool_name}({call.input})")
+    for delta in call.output_deltas:
+        print(delta, end="", flush=True)
+    print(call.output, call.error)
+```
+
+message.tool_calls中的每个块都是一个tool_call_chunk，它包含调用的id、名称，并且只包含其参数的新部分。
+调用的块连接成完整的参数，message.tool_calls.get()返回解析后的工具调用。
+
+## Streaming sub-agents
+
+当create_agent调用调用另一个名为create_agent的调用时（通常通过包装工具），内部agent的事件会在嵌套的命名空间中流动。
+传递给create_agent的 `name=` 标识流中的内部agent，因此ni 可以对每个agent进行过滤和标记。
+
