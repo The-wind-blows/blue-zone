@@ -1,0 +1,494 @@
+---
+sidebar_position: 4
+---
+
+# 结构化输出
+
+本页介绍使用create_agent的agent的结构化输出。要在模型上直接使用结构化输出（在agent之外），请参阅模型部分的结构化输出。
+
+结构化输出允许agent以特定的、可预测的格式返回数据。 您可以获得JSON对象、Pydantic模型或应用程序可以直接使用的数据类形式的结构化数据，而不是解析自然语言形式的响应。
+
+LangChain的create_agent自动处理结构化输出。 用户设置他们想要的结构化输出模式，当模型生成结构化数据时，它会被捕获、验证，并在agent状态的“structured_response”键中返回。
+
+```js
+def create_agent(
+    ...
+    response_format: Union[
+        ToolStrategy[StructuredResponseT],
+        ProviderStrategy[StructuredResponseT],
+        type[StructuredResponseT],
+        None,
+    ]
+)
+```
+
+## 响应格式
+
+使用`response_format` 控制agent怎么返回结构化数据:
+
+- ToolStrategy[StructuredResponseT]: 使用tool calling实现结构化输出
+- ProviderStrategy[StructuredResponseT]: 使用模型本身的结构化输出
+- type[StructuredResponseT]: Schema type-根据模型能力自动选择最佳策略
+- None: 未明确请求结构化输出
+
+当直接提供schema type时，LangChain会自动选择：
+
+- ProviderStrategy  如果所选的模型和提供者支持原生结构化输出（例如OpenAI、Anthropic（Claude）或xAI（Grok））。
+- ToolStrategy for all other models.
+
+JSON模式必须封装在显式策略（ProviderStrategy或ToolStrategy）中。当直接传递给response_format时，它们不会被自动检测到。
+如果使用langchain>=1.1，则从模型的配置文件数据中动态读取对结构化输出功能的支持。如果数据不可用，请使用其他条件或手动指定：
+如果指定了工具，则模型必须支持同时使用工具和结构化输出。
+
+结构化响应以agent最终状态的structured_response键返回。
+
+## Provider strategy
+
+一些模型提供者通过其API原生支持结构化输出（例如OpenAI、xAI（Grok）、Gemini、Anthropic（Claude））。这是最可靠的方法。
+要使用此策略，请配置ProviderStrategy：
+
+```js
+class ProviderStrategy(Generic[SchemaT]):
+    schema: type[SchemaT]
+    strict: bool | None = None
+# The strict param requires langchain>=1.2.
+```
+schema定义结构化输出格式, 支持：
+- Pydantic models: BaseModel subclasses with field validation. Returns validated Pydantic instance.
+- Dataclasses: Python dataclasses with type annotations. Returns dict.
+- TypedDict: Typed dictionary classes. Returns dict.
+- JSON Schema: Dictionary with JSON schema specification. Must include top-level title and description keys. Returns dict(字典).
+
+`strict` : 可选布尔参数，用于启用严格的模式遵守。由一些提供商支持（例如OpenAI和xAI）。默认为无（禁用）。
+
+当你将schema直接传递给create_agent.response_format并且模型支持原生结构化输出时，LangChain会自动使用ProviderStrategy：
+
+```js
+from langchain.agents import create_agent
+from langchain.agents.structured_output import ProviderStrategy
+
+contact_info_schema = {
+    "title": "ContactInfo",
+    "type": "object",
+    "description": "Contact information for a person.",
+    "properties": {
+        "name": {"type": "string", "description": "The name of the person"},
+        "email": {"type": "string", "description": "The email address of the person"},
+        "phone": {"type": "string", "description": "The phone number of the person"}
+    },
+    "required": ["name", "email", "phone"]
+}
+
+agent = create_agent(
+    model="gpt-5.5",
+    tools=[],
+    response_format=ProviderStrategy(contact_info_schema)
+)
+
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "Extract contact info from: John Doe, john@example.com, (555) 123-4567"}]
+})
+
+result["structured_response"]
+# {'name': 'John Doe', 'email': 'john@example.com', 'phone': '(555) 123-4567'}
+```
+模型原生的结构化输出提供了高可靠性和严格的验证，因为模型强制执行schema; 可用时使用它。
+
+如果模型原生支持结构化输出，则其功能等同于编写response_format=ProductReview而不是response_format=ProviderStrategy(ProductReview);
+在任何一种情况下，如果不支持结构化输出，agent将退回到工具调用策略(ToolStrategy[StructuredResponseT])。
+
+## Tool calling strategy
+
+对于不支持原生结构化输出的模型，LangChain使用工具调用(Tool calling)来实现相同的结果。这适用于支持工具调用的所有模型（大多数现代模型）。
+
+要使用此策略，请配置`ToolStrategy`：
+
+```js
+class ToolStrategy(Generic[SchemaT]):
+    schema: type[SchemaT]
+    tool_message_content: str | None
+    handle_errors: Union[
+        bool,
+        str,
+        type[Exception],
+        tuple[type[Exception], ...],
+        Callable[[Exception], str],
+    ]
+```
+
+schema定义结构化输出格式, 支持：
+- Pydantic models: BaseModel subclasses with field validation. Returns validated Pydantic instance.
+- Dataclasses: Python dataclasses with type annotations. Returns dict.
+- TypedDict: Typed dictionary classes. Returns dict.
+- JSON Schema: Dictionary with JSON schema specification. Must include top-level title and description keys. Returns dict(字典).
+- Union types: Multiple schema options. The model will choose the most appropriate schema based on the context.
+
+生成结构化输出时返回的tool message的自定义内容。 如果未提供，则默认显示一条显示结构化响应数据的message。
+
+结构化输出验证失败的错误处理策略。默认为True。
+
+- True: Catch all errors with default error template
+- str: Catch all errors with this custom message
+- type[Exception]: Only catch this exception type with default message
+- tuple[type[Exception], ...]: Only catch these exception types with default message
+- Callable[[Exception], str]: Custom function that returns error message
+- False: No retry, let exceptions propagate
+
+
+```js
+from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
+
+product_review_schema = {
+    "title": "ProductReview",
+    "type": "object",
+    "description": "Analysis of a product review.",
+    "properties": {
+        "rating": {
+            "type": ["integer", "null"],
+            "description": "The rating of the product (1-5)",
+            "minimum": 1,
+            "maximum": 5
+        },
+        "sentiment": {
+            "type": "string",
+            "enum": ["positive", "negative"],
+            "description": "The sentiment of the review"
+        },
+        "key_points": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "The key points of the review"
+        }
+    },
+    "required": ["sentiment", "key_points"]
+}
+
+agent = create_agent(
+    model="gpt-5.5",
+    tools=[],
+    response_format=ToolStrategy(product_review_schema)
+)
+
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "Analyze this review: 'Great product: 5 out of 5 stars. Fast shipping, but expensive'"}]
+})
+result["structured_response"]
+# {'rating': 5, 'sentiment': 'positive', 'key_points': ['fast shipping', 'expensive']}
+```
+
+### Custom tool message content
+
+tool_message_content参数允许你自定义生成结构化输出时出现在对话历史记录中的message：
+
+```js
+from pydantic import BaseModel, Field
+from typing import Literal
+from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
+
+class MeetingAction(BaseModel):
+    """Action items extracted from a meeting transcript."""
+    task: str = Field(description="The specific task to be completed")
+    assignee: str = Field(description="Person responsible for the task")
+    priority: Literal["low", "medium", "high"] = Field(description="Priority level")
+
+agent = create_agent(
+    model="gpt-5.5",
+    tools=[],
+    response_format=ToolStrategy(
+        schema=MeetingAction,
+        tool_message_content="Action item captured and added to meeting notes!"
+    )
+)
+
+agent.invoke({
+    "messages": [{"role": "user", "content": "From our meeting: Sarah needs to update the project timeline as soon as possible"}]
+})
+```
+
+```js
+================================ Human Message =================================
+From our meeting: Sarah needs to update the project timeline as soon as possible
+================================== Ai Message ==================================
+Tool Calls:
+  MeetingAction (call_1)
+ Call ID: call_1
+  Args:
+    task: Update the project timeline
+    assignee: Sarah
+    priority: high
+================================= Tool Message =================================
+Name: MeetingAction
+Action item captured and added to meeting notes!
+```    
+如果没有tool_message_content，我们的最终ToolMessage将是：
+```js
+================================= Tool Message =================================
+Name: MeetingAction
+Returning structured response: {'task': 'update the project timeline', 'assignee': 'Sarah', 'priority': 'high'}
+```
+### Error handling
+
+模型在通过工具调用生成结构化输出时可能会出错。 LangChain提供智能重试机制来自动处理这些错误。
+
+#### 多个结构化输出错误
+
+当模型错误地调用多个结构化输出工具时，agent会在ToolMessage中提供错误反馈，并提示模型重试：
+
+```js
+from pydantic import BaseModel, Field
+from typing import Union
+from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
+
+class ContactInfo(BaseModel):
+    name: str = Field(description="Person's name")
+    email: str = Field(description="Email address")
+
+class EventDetails(BaseModel):
+    event_name: str = Field(description="Name of the event")
+    date: str = Field(description="Event date")
+
+agent = create_agent(
+    model="gpt-5.5",
+    tools=[],
+    response_format=ToolStrategy(Union[ContactInfo, EventDetails])  # Default: handle_errors=True
+)
+
+agent.invoke({
+    "messages": [{"role": "user", "content": "Extract info: John Doe (john@email.com) is organizing Tech Conference on March 15th"}]
+})
+```
+
+```js
+================================ Human Message =================================
+Extract info: John Doe (john@email.com) is organizing Tech Conference on March 15th
+None
+================================== Ai Message ==================================
+Tool Calls:
+  ContactInfo (call_1)
+ Call ID: call_1
+  Args:
+    name: John Doe
+    email: john@email.com
+  EventDetails (call_2)
+ Call ID: call_2
+  Args:
+    event_name: Tech Conference
+    date: March 15th
+================================= Tool Message =================================
+Name: ContactInfo
+Error: Model incorrectly returned multiple structured responses (ContactInfo, EventDetails) when only one is expected.
+ Please fix your mistakes.
+================================= Tool Message =================================
+Name: EventDetails
+Error: Model incorrectly returned multiple structured responses (ContactInfo, EventDetails) when only one is expected.
+ Please fix your mistakes.
+================================== Ai Message ==================================
+Tool Calls:
+  ContactInfo (call_3)
+ Call ID: call_3
+  Args:
+    name: John Doe
+    email: john@email.com
+================================= Tool Message =================================
+Name: ContactInfo
+Returning structured response: {'name': 'John Doe', 'email': 'john@email.com'}
+```
+
+#### Schema validation error
+
+当结构化输出与预期模式不匹配时，agent会提供特定的错误反馈：
+
+```js
+from pydantic import BaseModel, Field
+from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
+
+class ProductRating(BaseModel):
+    rating: int | None = Field(description="Rating from 1-5", ge=1, le=5)
+    comment: str = Field(description="Review comment")
+
+agent = create_agent(
+    model="gpt-5.5",
+    tools=[],
+    response_format=ToolStrategy(ProductRating),  # Default: handle_errors=True
+    system_prompt="You are a helpful assistant that parses product reviews. Do not make any field or value up."
+)
+
+agent.invoke({
+    "messages": [{"role": "user", "content": "Parse this: Amazing product, 10/10!"}]
+})
+```
+
+```js
+================================ Human Message =================================
+Parse this: Amazing product, 10/10!
+================================== Ai Message ==================================
+Tool Calls:
+  ProductRating (call_1)
+ Call ID: call_1
+  Args:
+    rating: 10
+    comment: Amazing product
+================================= Tool Message =================================
+Name: ProductRating
+Error: Failed to parse structured output for tool 'ProductRating': 1 validation error for ProductRating.rating
+  Input should be less than or equal to 5 [type=less_than_equal, input_value=10, input_type=int].
+ Please fix your mistakes.
+================================== Ai Message ==================================
+Tool Calls:
+  ProductRating (call_2)
+ Call ID: call_2
+  Args:
+    rating: 5
+    comment: Amazing product
+================================= Tool Message =================================
+Name: ProductRating
+Returning structured response: {'rating': 5, 'comment': 'Amazing product'}
+```
+
+#### Error handling strategies
+
+你可以使用handle_errors参数自定义错误的处理方式：
+
+自定义错误消息：
+```js
+ToolStrategy(
+    schema=ProductRating,
+    handle_errors="Please provide a valid rating between 1-5 and include a comment."
+)
+```
+如果`handle_errors`是一个字符串，agent程序将始终提示模型使用固定的tool message重试：
+
+```js
+================================= Tool Message =================================
+Name: ProductRating
+Please provide a valid rating between 1-5 and include a comment.
+```
+仅处理特定异常：
+```js
+ToolStrategy(
+    schema=ProductRating,
+    handle_errors=ValueError  # Only retry on ValueError, raise others
+)
+```
+
+如果handle_errors是异常类型，则agent将仅在引发的异常是指定类型时重试（使用默认错误消息）。在所有其他情况下，将提出例外情况。
+
+自定义处理函数：
+
+```js
+from langchain.agents.structured_output import StructuredOutputValidationError
+from langchain.agents.structured_output import MultipleStructuredOutputsError
+
+def custom_error_handler(error: Exception) -> str:
+    if isinstance(error, StructuredOutputValidationError):
+        return "There was an issue with the format. Try again."
+    elif isinstance(error, MultipleStructuredOutputsError):
+        return "Multiple structured outputs were returned. Pick the most relevant one."
+    else:
+        return f"Error: {str(error)}"
+
+agent = create_agent(
+    model="gpt-5.5",
+    tools=[],
+    response_format=ToolStrategy(
+                        schema=Union[ContactInfo, EventDetails],
+                        handle_errors=custom_error_handler
+                    )  # Default: handle_errors=True
+)
+
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "Extract info: John Doe (john@email.com) is organizing Tech Conference on March 15th"}]
+})
+
+for msg in result['messages']:
+    # If message is actually a ToolMessage object (not a dict), check its class name
+    if type(msg).__name__ == "ToolMessage":
+        print(msg.content)
+    # If message is a dictionary or you want a fallback
+    elif isinstance(msg, dict) and msg.get('tool_call_id'):
+        print(msg['content'])
+```
+On StructuredOutputValidationError:
+```js
+================================= Tool Message =================================
+Name: ToolStrategy
+There was an issue with the format. Try again.
+```
+
+On MultipleStructuredOutputsError:
+```js
+================================= Tool Message =================================
+Name: ToolStrategy
+Multiple structured outputs were returned. Pick the most relevant one.
+```
+On other errors:
+```js
+================================= Tool Message =================================
+Name: ToolStrategy
+Error: <error message>
+```
+No error handling:
+```js
+response_format = ToolStrategy(
+    schema=ProductRating,
+    handle_errors=False  # All errors raised
+)
+```
+
+## Handle parsing errors in chains
+
+上述策略，包括handle_errors重试，适用于使用create_agent创建的agent。 由管道运算符（例如，prompt|model|parser）组成的chains没有内置的输出解析失败重试机制。 
+要处理chain中格式错误的模型输出，请使用以下方法之一：
+
+- Model-level structured output: 即模型级别的结构化输出；使用with_structured_output将schema绑定到模型。 当提供程序支持原生结构化输出时，它会强制执行schema
+并避免大多数解析失败。请参见模型-结构化输出。当模型支持此方法时，请使用此方法。
+- Fix malformed output with a model: 即修复模型输出格式错误的问题; 将输出解析封装在langchain classic的OutputFixingParser中。 在解析失败时，
+包装器将格式错误的输出、解析器的格式指令和错误消息发送到模型，并解析纠正后的响应。
+
+OutputFixingParser需要langchain经典包。 在v1之前，它以langchain.output_passers.OutputFixingParser的形式提供。
+
+```js
+from langchain.chat_models import init_chat_model
+from langchain_classic.output_parsers import OutputFixingParser
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel, Field
+
+class ProductReview(BaseModel):
+    """Analysis of a product review."""
+
+    rating: int = Field(description="The rating of the product (1-5)", ge=1, le=5)
+    sentiment: str = Field(description="The sentiment of the review")
+
+
+model = init_chat_model("gpt-5.4")
+
+base_parser = PydanticOutputParser(pydantic_object=ProductReview)
+fixing_parser = OutputFixingParser.from_llm(
+    parser=base_parser,
+    llm=model,
+    max_retries=3,
+)
+
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "Analyze the product review.\n{format_instructions}"),
+    ("user", "{review}"),
+]).partial(format_instructions=base_parser.get_format_instructions())
+
+chain = prompt | model | fixing_parser
+
+result = chain.invoke({"review": "Great product, 5 stars! Fast shipping, but expensive."})
+# ProductReview(rating=5, sentiment='positive')
+```
+封装解析器仅在初始解析失败时调用修复模型，因此格式良好的输出不会产生额外的模型调用。 max_retrys控制在引发原始OutputParserException之前进行多少次修复尝试。
+支持同步（invoke）和异步（ainvoke）执行。
+
+OutputFixingParser发送格式错误的完成、解析器的格式指令和错误。它不包括原始prompt。 如果更正输出需要原始上下文提示，请使用langchain classic中的RetryOutputParser。 
+它是通过其parse_with_prompt（completion，prompt_value）方法而不是parse调用的，因此它不能直接作为chain的最后一步进行管道传输。
+
+
+

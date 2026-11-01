@@ -1,0 +1,40 @@
+---
+sidebar_position: 3
+---
+
+# Context engineering
+
+## 概览
+
+构建agent(或任何LLM应用程序)的难点在于使其足够可靠。虽然它们可能适用于原型，但在现实世界的用例中经常失败。
+
+### Why do agents fail?
+
+当agent失败时，通常是因为agent内部的LLM调用采取了错误的操作/没有做我们期望的事情。LLM失败的原因有两个：
+1. 基础LLM的能力不足
+2. “正确”的上下文未传递给LLM
+
+通常情况下，这实际上是导致agent不可靠的第二个原因。
+
+**Context engineering**是以正确的格式提供正确的信息和工具，以便LLM能够完成任务。这是人工智能工程师的首要任务。缺乏“正确”的上下文是更可靠代理的头号障碍，
+LangChain的agent抽象是为了促进上下文工程而独特设计的。
+
+### The agent loop
+
+典型的agent循环由两个主要步骤组成：
+1. **Model call** -使用提示词和可用工具调用LLM，返回响应或执行工具的请求
+2. **Tool execution** -执行LLM请求的工具，返回工具结果
+
+
+
+### What you can control
+
+### Data sources
+
+### How it works
+
+
+## Model context
+
+### System Prompt
+
