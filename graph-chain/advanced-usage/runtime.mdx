@@ -1,0 +1,170 @@
+---
+sidebar_position: 2
+---
+
+# Runtime
+
+## 概览
+
+LangChain的create_agent在LangGraph的运行时环境下运行。LangGraph公开了一个包含以下信息的Runtime对象：
+
+1. **Context**: agent调用的静态信息，如用户id、数据库连接或其他依赖关系
+2. **Store**: 用于长期记忆的BaseStore实例
+3. **Stream Writer**： 通过“自定义”流模式用于流式传输信息的对象
+4. **Execution info**: 当前执行的标识和重试信息（线程ID、运行ID、尝试次数）
+5. **Server info**: 在LangGraph server上运行时的服务器特定元数据（助手ID、图ID、经过身份验证的用户）
+
+Runtime context为你的工具和中间件提供依赖注入。在调用agent时，你可以注入运行时依赖关系（如数据库连接、用户ID或配置），而不是硬编码值或使用全局状态。
+这使你的工具更具可测试性、可重用性和灵活性。
+
+你可以在工具和中间件中访问运行时信息。
+
+## Access
+
+使用create_agent创建agent时，可以指定context_schema来定义存储在agent Runtime中的上下文结构。
+
+调用agent时，将上下文参数与运行的相关配置一起传递：
+```js
+from dataclasses import dataclass
+from langchain.agents import create_agent
+
+@dataclass
+class Context:
+    user_name: str
+
+agent = create_agent(
+    model="gpt-5-nano",
+    tools=[...],
+    context_schema=Context  
+)
+
+agent.invoke(
+    {"messages": [{"role": "user", "content": "What's my name?"}]},
+    context=Context(user_name="John Smith")
+)
+```
+
+### Inside tools
+
+你可以访问工具中的运行时信息，以：
+- Access the Context
+- Read or write long-term memory
+- Write to the custom stream (ex, tool progress / updates)
+
+使用ToolRuntime参数访问工具内的Runtime对象。
+
+```js
+from dataclasses import dataclass
+from langchain.tools import tool, ToolRuntime  
+
+@dataclass
+class Context:
+    user_id: str
+
+@tool
+def fetch_user_email_preferences(runtime: ToolRuntime[Context]) -> str:
+    """Fetch the user's email preferences from the store."""
+    user_id = runtime.context.user_id  
+
+    preferences: str = "The user prefers you to write a brief and polite email."
+    if runtime.store:
+        if memory := runtime.store.get(("users",), user_id):
+            preferences = memory.value["preferences"]
+
+    return preferences
+```
+### Execution info and server info inside tools
+
+在LangGraph server上运行时，通过runtime.execution_info访问执行标识(线程ID、运行ID),并通过runtime.server_info访问服务器特定的元数据(助理ID、经过身份验证的用户):
+
+```js
+from langchain.tools import tool, ToolRuntime
+
+@tool
+def context_aware_tool(runtime: ToolRuntime) -> str:
+    """A tool that uses execution and server info."""
+    # Access thread and run IDs
+    info = runtime.execution_info
+    print(f"Thread: {info.thread_id}, Run: {info.run_id}")
+
+    # Access server info (only available on LangGraph Server)
+    server = runtime.server_info
+    if server is not None:
+        print(f"Assistant: {server.assistant_id}")
+        if server.user is not None:
+            print(f"User: {server.user.identity}")
+
+    return "done"
+```
+
+当不在LangGraph server上运行时(例如，在本地开发期间)，server_info为None。
+运行时.execution_info和运行时.server_info需要deepagents>=0.5.0(或langgraph>=1.1.5)
+
+### Inside middleware
+
+你可以访问中间件中的运行时信息，以创建动态prompt、修改message或基于用户上下文控制agent行为。
+
+使用Runtime参数访问节点样式hooks内的Runtime对象。对于wrap-style hooks，Runtime对象在ModelRequest参数中可用。
+
+```js
+from dataclasses import dataclass
+from langchain.messages import AnyMessage
+from langchain.agents import create_agent, AgentState
+from langchain.agents.middleware import dynamic_prompt, ModelRequest, before_model, after_model
+from langgraph.runtime import Runtime
+
+@dataclass
+class Context:
+    user_name: str
+
+# Dynamic prompts
+@dynamic_prompt
+def dynamic_system_prompt(request: ModelRequest) -> str:
+    user_name = request.runtime.context.user_name  
+    system_prompt = f"You are a helpful assistant. Address the user as {user_name}."
+    return system_prompt
+
+# Before model hook
+@before_model
+def log_before_model(state: AgentState, runtime: Runtime[Context]) -> dict | None:
+    print(f"Processing request for user: {runtime.context.user_name}")
+    return None
+
+# After model hook
+@after_model
+def log_after_model(state: AgentState, runtime: Runtime[Context]) -> dict | None:
+    print(f"Completed request for user: {runtime.context.user_name}")
+    return None
+
+agent = create_agent(
+    model="gpt-5-nano",
+    tools=[...],
+    middleware=[dynamic_system_prompt, log_before_model, log_after_model],
+    context_schema=Context
+)
+
+agent.invoke(
+    {"messages": [{"role": "user", "content": "What's my name?"}]},
+    context=Context(user_name="John Smith")
+)
+```
+
+### Execution info and server info inside middleware
+
+中间件hooks还可以访问runtime.execution_info和runtime.server_info：
+
+```js
+from langchain.agents import AgentState
+from langchain.agents.middleware import before_model
+from langgraph.runtime import Runtime
+
+
+@before_model
+def auth_gate(state: AgentState, runtime: Runtime) -> dict | None:
+    """Block unauthenticated users when running on LangGraph Server."""
+    server = runtime.server_info
+    if server is not None and server.user is None:
+        raise ValueError("Authentication required")
+    print(f"Thread: {runtime.execution_info.thread_id}")
+    return None
+```

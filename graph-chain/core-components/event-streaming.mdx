@@ -116,5 +116,157 @@ message.tool_calls中的每个块都是一个tool_call_chunk，它包含调用�
 ## Streaming sub-agents
 
 当create_agent调用调用另一个名为create_agent的调用时（通常通过包装工具），内部agent的事件会在嵌套的命名空间中流动。
-传递给create_agent的 `name=` 标识流中的内部agent，因此ni 可以对每个agent进行过滤和标记。
+传递给create_agent的 `name=` 可以识别stream中的内部agent，因此你可以对每个agent进行过滤和标记。
+
+命名的sub-agent在`stream.subagents`中显示。每个处理都公开了inner-agent自己的.messages、.values、.tool_calls和.output，以及.name(你传递的`name=`)
+和.cause(sub-agent的tool calling)。 因为这里只显示了命名的`create_agent`运行，所以您不需要过滤掉普通的subgraph。
+
+```js
+from langchain.agents import create_agent
+from langchain.chat_models import init_chat_model
+
+def get_weather(city: str) -> str:
+    """Get weather for a given city."""
+    return f"It's always sunny in {city}!"
+
+weather_agent = create_agent(
+    model=init_chat_model("openai:gpt-5.5"),
+    tools=[get_weather],
+    name="weather_agent",
+)
+
+def call_weather(query: str) -> str:
+    """Query the weather agent."""
+    result = weather_agent.invoke({"messages": [{"role": "user", "content": query}]})
+    return result["messages"][-1].text
+
+supervisor = create_agent(
+    model=init_chat_model("openai:gpt-5.5"),
+    tools=[call_weather],
+    name="supervisor",
+)
+
+stream = supervisor.stream_events(
+    {"messages": [{"role": "user", "content": "What's the weather in Boston?"}]},
+    version="v3",
+)
+
+for subagent in stream.subagents:
+    print(f"{subagent.name}: ", end="")
+    for message in subagent.messages:
+        for token in message.text:
+            print(token, end="", flush=True)
+    print()
+```
+从工具调用的普通`StateGraph`子图也会出现在`stream.subgraphs`上——在`.compile(name=…)`设置 `name=` 以获取subgent.graph_name中的标签。
+
+`stream.sbagents`是命名的createagent的sub-agent的焦点视图，而`stream.sbgraphs`覆盖了每个内嵌的graph。使用与你的UI匹配的任何一个。
+
+## 状态和最终输出
+
+将stream.values用于状态快照，stream.out用于最终agent state。
+```js
+stream = agent.stream_events(input, version="v3")
+
+for snapshot in stream.values:
+    print(snapshot)
+
+final_state = stream.output
+```
+
+
+## Multiple projections
+
+这里实际上指的不同类型的遍历。对于异步代码中的并发消费，使用`astream_events`和`asyncio.gather`：
+
+```js
+import asyncio
+
+stream = await agent.astream_events(input, version="v3")
+
+async def consume_messages():
+    async for message in stream.messages:
+        print(await message.text)
+
+async def consume_tool_calls():
+    async for call in stream.tool_calls:
+        print(call.tool_name, call.input)
+
+await asyncio.gather(consume_messages(), consume_tool_calls())
+```
+
+对于同步代码，请使用stream.sincterate(...)替代：
+```js
+stream = agent.stream_events(input, version="v3")
+
+for name, item in stream.interleave("messages", "tool_calls", "values"):
+    if name == "messages":
+        print(item.text)
+    elif name == "tool_calls":
+        print(item.tool_name, item.input)
+    elif name == "values":
+        print(item)
+```
+要访问未暴露为类型化的projections类型，或检查整个事件脉络，请迭代原始协议事件：
+```js
+for event in stream:
+    print(event["method"], event["params"]["namespace"], event["params"]["data"])
+```
+
+
+## 自定义更新
+
+当您的应用程序需要非内置的投影时，例如检索进度、工件或特定于域的事件，请使用自定义`stream transformer`。
+
+```js
+stream = agent.stream_events(
+    input,
+    version="v3",
+    transformers=[ToolActivityTransformer],
+)
+
+for activity in stream.extensions["tool_activity"]:
+    print(activity)
+```
+
+### 在中间件上注册transformer
+
+中间件可以在其hooks和tools旁边声明stream transformer factories。不同语言有不同的 factory shape：
+
+将`AgentMiddleware`子类上的transformers属性设置为factories sequence。每个factory都有Callable[[tuple[str, ...]], StreamTransformer],
+并且被调用为factory(scope), scope是微型多域元组， 子图不为空。每次调用返回一个新的transformer可以使每个子图保持隔离。
+
+```js
+from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware
+
+class ToolActivityMiddleware(AgentMiddleware):
+    transformers = (ToolActivityTransformer,)
+
+agent = create_agent(
+    model="gpt-5-nano",
+    tools=[get_weather],
+    middleware=[ToolActivityMiddleware()],
+)
+```
+
+在编译时，create_agent将中间件注册的工厂与传递给其自己的`transformers=`参数的任何内容合并。编译图的最终顺序是：
+
+- 内置的ToolCallTransformer
+- 按中间件顺序注册的Middleware-registered factories
+- Caller-supplied `transformers=` from create_agent
+
+这使内置的tool-call projection保持在transformers之前，并为调用者提供的条目提供最终结果。
+
+内置PIIMiddleware使用此钩子从流式传输的线输出中编辑PII。 当apply_to_output=True时，其注册的transformer会在文本增量、工具调用参数、
+工具输出和状态快照离开运行之前从它们中清除检测到的PII，从而关闭窗口，否则after_model状态级编辑会让原始PII通过stream_events的实时阅读器（版本=“v3”）。
+
+有关完整的配置界面，请参阅PII检测。
+See Build your own projection for the transformer contract
+
+## 相关
+
+- Streaming covers low-level Pregel stream modes.
+- Build your own projection covers writing application-specific projections.
+- Frontend streaming patterns shows UI use cases built on streamed state.
 
