@@ -1,3 +1,7 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+
 ---
 slug: mdx-blog-post
 title: MDX Blog Post
@@ -22,3 +26,17 @@ For example, use JSX to create an interactive button:
 ```
 
 <button onClick={() => alert('button clicked!')}>Click me!</button>
+
+
+
+<Tabs>
+  <TabItem value="State" label="State" default>
+    This is an apple 🍎
+  </TabItem>
+  <TabItem value="Store" label="Store">
+    This is an orange 🍊
+  </TabItem>
+  <TabItem value="Runtime Context" label="Runtime Context">
+    This is a banana 🍌
+  </TabItem>
+</Tabs>
