@@ -1,0 +1,104 @@
+---
+sidebar_position: 4
+---
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# MCP
+
+模型上下文协议（MCP）是一种开放协议，它规范了应用程序如何向语言模型提供工具和上下文。
+LangChain agent通过 MCPAdapter 调用MCP服务器上定义的工具，MCPAdapter会发现服务器的工具并将其调整为LangChain工具，你可以直接传递给create_agent。
+
+MCPAdapter基于FastMCP构建，它处理传输推理、协议协商、连接管理和身份验证。本节涵盖了LangChain特定的层，并链接到FastMCP客户端文档，以获取下面的连接详细信息。
+
+langchain.mcp命名空间要求langchain[mcp]>=1.4.0，并且处于测试阶段。从中导入会在每个进程中引发一次LangChainBetaWarning。
+API可能会改变。如果您在v1.4.0之前使用了MCP，请参阅从langchain MCP-adapers迁移
+
+## Install
+
+使用mcp安装LangChain，它会自动带上FastMCP：
+<Tabs>
+  <TabItem value="pip" label="pip" default>
+    ```pip install "langchain[mcp]"```
+    
+  </TabItem>
+  <TabItem value="uv" label="uv">
+    ```uv add "langchain[mcp]"```
+  </TabItem>
+</Tabs>
+
+## Quickstart
+
+打开MCPAdapter，使用list_tools()发现服务器的tool，并在上下文中构建agent。这些tool保存在客户端，因此agent在上下文退出后仍然可用：
+```python
+from langchain.agents import create_agent
+from langchain.mcp import MCPAdapter
+
+async def main():
+    async with MCPAdapter("https://example.com/mcp") as adapter:
+        tools = await adapter.list_tools()
+        agent = create_agent("claude-sonnet-5", tools)
+        return await agent.ainvoke({"messages": [{"role": "user", "content": "..."}]})
+```
+
+### LangChain docs MCP server
+
+The LangChain docs MCP server is a public HTTP endpoint at:
+`https://docs.langchain.com/mcp`
+
+将agent连接到它以搜索和阅读文档，而无需编写自定义工具：
+
+```
+from langchain.agents import create_agent
+from langchain.mcp import MCPAdapter
+
+async def main():
+    async with MCPAdapter("https://docs.langchain.com/mcp") as adapter:
+        tools = await adapter.list_tools()
+        agent = create_agent("claude-sonnet-5", tools)
+        return await agent.ainvoke(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "How do I add short-term memory to a LangChain agent?",
+                    }
+                ]
+            }
+        )
+```
+
+The docs MCP server是公共的，不需要API密钥。有关IDE和编程agent设置(Claude Code、Cursor等)，请参阅以编程方式使用文档。
+
+服务器公开了这些工具：
+
+| Tool | Description |
+|---|---|
+| search_docs_by_lang_chain                  |  Search docs for relevant guides, how-tos, and examples.  |
+| query_docs_filesystem_docs_by_lang_chain   | Read or search docs through a virtual filesystem (rg, head, cat, and related commands). |                                                         |
+| submit_feedback                            |  Report a problem with a documentation page. |
+
+## Transports
+
+MCPAdapter从你提供的target进行传输。target是进程内服务器、stdio上的本地脚本和远程URL之间的唯一区别：
+```python
+from pathlib import Path
+from langchain.mcp import MCPAdapter
+
+# An in-process FastMCP server: no subprocess, no socket. Ideal for tests.
+in_memory = MCPAdapter(server)  # a FastMCP instance
+
+# A script path is launched over stdio, one subprocess per adapter.
+stdio = MCPAdapter(Path("weather_server.py"))
+
+# A string must be an http(s) URL, reached over streamable HTTP.
+http = MCPAdapter("https://example.com/mcp")
+```
+target可以是以下任何一个：
+- http/https URL（str）：通过流式http到达
+- A script path (Path): launched as a subprocess over stdio.(作为stdio上的子进程启动)
+- A transport object (StreamableTransport):  a preconfigured transport object(预配置的传输对象). See Client Transports.
+- An in-process FastMCP server: connected in memory, without a subprocess or socket.
+- An MCPConfig dictionary( '{' mcpServers '}'  ): several servers behind one adapter. See Connections.
+- A prebuilt fastmcp.Client: for full control over transport, caching, and protocol negotiation.
+
