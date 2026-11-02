@@ -1,0 +1,69 @@
+---
+sidebar_position: 8
+---
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Long-term memory
+
+长期记忆让你的agent在不同的对话和会话中存储和回忆信息。与仅限于单个线程的短期记忆不同，长期记忆在线程之间持续存在，可以随时调用。
+长期记忆建立在LangGraph存储之上，它将数据保存为按namespace和key组织的JSON文档。
+
+## Usage
+
+要向agent添加长期记忆，请创建一个store并将其传递给create_agent:
+
+<Tabs>
+  <TabItem value="InMemoryStore" label="InMemoryStore" default>
+    ```python
+    from langchain.agents import create_agent
+    from langchain_core.runnables import Runnable
+    from langgraph.store.memory import InMemoryStore
+
+    # InMemoryStore saves data to an in-memory dictionary. Use a DB-backed store in production use.
+    store = InMemoryStore()
+
+    agent: Runnable = create_agent(
+        "claude-sonnet-4-6",
+        tools=[],
+        store=store,
+    )
+    ```
+  </TabItem>
+  <TabItem value="PostgreSQL" label="PostgreSQL">
+    <Tabs>
+      <TabItem  value="pip" label="pip">
+        ```pip install -U langgraph-checkpoint-postgres "psycopg[binary]"```
+      </TabItem>
+      <TabItem  value="uv" label="uv">
+        ```uv add langgraph-checkpoint-postgres "psycopg[binary]"```
+      </TabItem>
+    </Tabs>
+    ```python
+    from langchain.agents import create_agent
+    from langchain_core.runnables import Runnable
+    from langgraph.store.postgres import PostgresStore  # type: ignore[import-not-found]
+
+    DB_URI = "postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+    with PostgresStore.from_conn_string(DB_URI) as store:
+        store.setup()
+        agent: Runnable = create_agent(
+            "claude-sonnet-4-6",
+            tools=[],
+            store=store,
+        )
+    ```
+  </TabItem>
+</Tabs>
+
+然后，tool可以使用runtime.store参数对存储进行读写操作。有关示例，请参阅Read long-term memory in tools and Write long-term memory from tools.
+
+## Memory storage
+
+LangGraph将长期记忆作为JSON文档存储在存储中。
+每个内存都组织在一个自定义`namespace`(类似于文件夹)和一个不同的key(类似于文件名)下。命名空间通常包括用户或组织ID或其他标签，这使得组织信息变得更加容易。
+
+这种结构实现了存储器的分层组织。然后通过内容过滤器支持跨命名空间搜索。
+
+
+

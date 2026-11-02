@@ -1,0 +1,19 @@
+---
+sidebar_position: 5
+---
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Human-in-the-loop
+
+Human in The Loop（HITL）中间件允许你将人工监督添加到agent工具调用中。当模型提出可能需要审查的操作时，例如写入文件或执行SQL，中间件可以暂停执行并等待决定。
+
+它通过根据可配置的策略检查每个工具调用来实现这一点。如果需要干预，中间件会发出一个中断来停止执行。图形状态使用LangGraph的持久层保存，因此执行可以安全暂停并稍后恢复。
+
+然后，人类的决定决定了接下来会发生什么：对于“询问用户”风格的工具，可以按原样批准（批准）、在运行前修改（编辑）、用反馈拒绝（拒绝）或直接响应（响应）。
+
+## Interrupt decision types
+
+中间件定义了人类可以对中断做出响应的四种内置方式：
+
+
