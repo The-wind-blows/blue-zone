@@ -3,6 +3,7 @@ sidebar_position: 8
 ---
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
+import kkk from './img/router.png';
 
 # Long-term memory
 
@@ -56,6 +57,8 @@ import TabItem from '@theme/TabItem';
   </TabItem>
 </Tabs>
 
+对于其他store后端，包括Redis和MongoDB，请参阅store集成列表。有关MongoDB的演练，请参阅MongoDB的长期记忆。
+
 然后，tool可以使用runtime.store参数对存储进行读写操作。有关示例，请参阅Read long-term memory in tools and Write long-term memory from tools.
 
 ## Memory storage
@@ -66,5 +69,40 @@ LangGraph将长期记忆作为JSON文档存储在存储中。
 这种结构实现了存储器的分层组织。然后通过内容过滤器支持跨命名空间搜索。
 
 
+<Tabs>
+  <TabItem value="InMemoryStore" label="InMemoryStore" default>
+    ```python
+    ```
+  </TabItem>
+  <TabItem value="PostgreSQL" label="PostgreSQL">
+    ```python
+    ```
+  </TabItem>
+</Tabs>
 
-  
+## Read long-term memory in tools
+
+<Tabs>
+  <TabItem value="InMemoryStore" label="InMemoryStore" default>
+    ```python
+    ```
+  </TabItem>
+  <TabItem value="PostgreSQL" label="PostgreSQL">
+    ```python
+    ```
+  </TabItem>
+</Tabs>
+
+## Write long-term memory from tools
+
+<Tabs>
+  <TabItem value="InMemoryStore" label="InMemoryStore" default>
+    ```python
+    ```
+  </TabItem>
+  <TabItem value="PostgreSQL" label="PostgreSQL">
+    ```python
+    ```
+  </TabItem>
+</Tabs>
+

@@ -1,5 +1,5 @@
 ---
-sidebar_position: 6
+sidebar_position: 1
 ---
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
@@ -163,7 +163,36 @@ Turn 1: “Buy coffee” Turn 2: “Buy coffee again”
 用户：“比较Python、JavaScript和Rust在web开发中的应用”
 
 每个语言agent/skills包含约2000个文档标记。所有模式都可以进行并行工具调用。
+| Pattern | Model calls | Total tokens  | Best fit  |
+|---|---|---|---|
+| Subagents |  5  |  ~9K   |   right    |
+| Handoffs  |  7+ |  ~14K+ |            |     
+| Skills    |  3  |  ~15K  |            |
+| Router    |  5  |  ~9K   |   right    |
 
+
+<Tabs>
+  <TabItem value="Subagents" label="Subagents" default>
+    5 calls, ~9K tokens
+    <center> ![Docs Version Dropdown](../img/subagent-domain.png) </center> 
+    每个subagent只与它的相关上下文隔离工作。总计：9K tokens。
+  </TabItem>
+  <TabItem value="Handoffs" label="Handoffs">
+    7+ calls, ~14K+ tokens
+    <center> ![Docs Version Dropdown](../img/handoffs-domain.png) </center> 
+    Handoff按顺序执行——无法并行研究所有三种语言。不断增长的对话历史记录增加了开销。总计：~14K tokens。
+  </TabItem>
+  <TabItem value="Skills" label="Skills">
+    3 calls, ~15K tokens
+    <center> ![Docs Version Dropdown](../img/skills-domain.png) </center> 
+    加载后，每次后续调用都会处理所有6K个skills文档token。由于上下文隔离，subagent处理的token总数减少了67%。总计：~15K tokens。
+  </TabItem>
+  <TabItem value="Router" label="Router">
+    5 calls, ~9K tokens
+    <center> ![Docs Version Dropdown](../img/router-domain.png) </center> 
+    Router使用LLM进行路由，然后并行调用agent。类似于subagent，但具有明确的路由步骤。总计：9K token。
+  </TabItem>
+</Tabs>
 
 关键见解：对于多域任务，具有并行执行的模式（subagent、Router）是最有效的。由于上下文积累，skills调用较少，但token使用率较高。这里的切换效率很低——它必须按顺序执行，
 不能利用并行工具调用同时咨询多个领域。
@@ -186,5 +215,4 @@ Turn 1: “Buy coffee” Turn 2: “Buy coffee again”
 | Parallel execution    | right |       |       | right | 
 | Large-context domains | right |       |       | right |
 | Simple, focused tasks |       |       | right |       |
-
 
