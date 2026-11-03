@@ -83,6 +83,12 @@ const config: Config = {
   themeConfig: {
     // Replace with your project's social card
     image: 'img/docusaurus-social-card.jpg',
+    tableOfContents: {
+      // tocMinHeadingLevel: 2,
+      // tocMaxHeadingLevel: 4,
+      minHeadingLevel: 2,  // 页内标题大纲的层级，从 H2 开始
+      maxHeadingLevel: 4,  // 到 H4 结束
+    },
     colorMode: {
       respectPrefersColorScheme: true,
     },
