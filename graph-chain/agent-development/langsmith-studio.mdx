@@ -3,3 +3,23 @@ sidebar_position: 1
 ---
 
 # LangSmith Studio
+
+
+|Architecture | Description  | Control |  Flexibility | Latency |
+|---|---|---|---|---|
+| 2-Step RAG  | 检索总是发生在生成之前。简单且可预测            |  high  | low     |  夯  |
+| Agentic RAG | LLM驱动的agent决定在推理过程中何时以及如何检索  | low    |  high   |  拉  |
+| Hybrid      | 将两种方法的特点与验证步骤相结合                | medium |  medium |  拉  |
+
+
+<Tabs>
+  <TabItem value="State" label="State" default>
+    This is an apple 🍎
+  </TabItem>
+  <TabItem value="Store" label="Store">
+    This is an orange 🍊
+  </TabItem>
+  <TabItem value="Runtime Context" label="Runtime Context">
+    This is a banana 🍌
+  </TabItem>
+</Tabs>
