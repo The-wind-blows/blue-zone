@@ -4,11 +4,53 @@ sidebar_position: 1
 
 # 概览
 
-这是LangGraph和LangChain的文档
+**Agent = Model + Harness.** LangChain提供了`create_agent`：一个最小的、高度可配置的harness。hasness是围绕模型循环的一切：提示词、工具和任何塑造行为的中间件。
+从原语开始，准确地组合你的用例所需的内容。支持OpenAI、Anthropic、谷歌等。
 
-## Getting Started
+:::tip
+**LangChain vs. LangGraph vs. Deep Agents**
+<small>
+当你想在不管理基础设施的情况下运行生产agent时，可以从包含一切驱动harness(上下文压缩、虚拟文件系统、subagent)的Managed Deep Agents开始。
+或者，为了在使用相同的Deep Agents harness时获得最大的灵活性，你可以自己使用Deep Agents SDK和自行管理agent，或者运行自定义的LangSmith部署。
+Deep Agents基于LangChain agent构建，你也可以直接使用。
 
-Get started by **creating a new site**.
+使用LangChain(create_agent)实现高度可定制的harness，可以轻松地根据你的用例和数据进行定制。
 
-Or **try Docusaurus immediately** with **[docusaurus.new](https://docusaurus.new)**.
+使用我们的低层编排框架LangGraph，结合确定性和agent工作流从而满足高级需求。
 
+使用LangSmith跟踪、调试和评估使用这些框架构建的agent。按照tracing quickstart进行设置。我们还建议设置LangSmith engine，该引擎可以监视你的跟踪、检测问题并提出修复方案。
+</small>
+:::
+
+
+## Create an agent
+
+此示例演示了如何使用自定义工具创建简单的LangChain agent：
+```python
+# pip install -qU langchain "langchain[openai]"
+from langchain.agents import create_agent
+
+def get_weather(city: str) -> str:
+    """Get weather for a given city."""
+    return f"It's always sunny in {city}!"
+
+agent = create_agent(
+    model="openai:gpt-5.5",
+    tools=[get_weather],
+    system_prompt="You are a helpful assistant",
+)
+
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "What's the weather in San Francisco?"}]}
+)
+print(result["messages"][-1].content_blocks)
+```
+
+请参阅安装说明和快速入门指南，开始使用LangChain构建自己的agent和应用程序。
+
+
+:::tip
+<small>
+使用LangSmith跟踪请求、调试agent行为和评估输出。将`LANGSMITH_TRACING=true`和你的API密钥设置为开始。
+</small>
+:::

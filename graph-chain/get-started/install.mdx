@@ -2,7 +2,53 @@
 sidebar_position: 1
 ---
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
 # 安装
 
+要安装LangChain软件包，请执行以下操作：
+<Tabs>
+  <TabItem value="pip" label="pip" default>
+    ```python
+    pip install -U langchain
+    # Requires Python 3.10+
+    ```
+  </TabItem>
+  <TabItem value="uv" label="uv">
+    ```python
+    uv add langchain
+    # Requires Python 3.10+
+    ```
+  </TabItem>
+</Tabs>
 
+LangChain提供了数百个LLM集成和数千个其他集成。这些存在于独立的提供商包中。
+<Tabs>
+  <TabItem value="pip" label="pip" default>
+    ```python
+    # Installing the OpenAI integration
+    pip install -U langchain-openai
 
+    # Installing the Anthropic integration
+    pip install -U langchain-anthropic
+    ```
+  </TabItem>
+  <TabItem value="uv" label="uv">
+    ```python
+    # Installing the OpenAI integration
+    uv add langchain-openai
+
+    # Installing the Anthropic integration
+    uv add langchain-anthropic
+    ```
+  </TabItem>
+</Tabs>
+
+现在你已经安装了LangChain，可以按照快速入门指南开始。
+
+:::tip[ ]
+<small>
+设置LangSmith跟踪以调试你的第一个LangChain应用程序。按照跟踪快速入门开始。我们建议你设置LangSmith engine，该引擎可以监视你的跟踪、检测问题并提出修复方案。
+</small>
+:::
