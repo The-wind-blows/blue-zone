@@ -121,6 +121,11 @@ const config: Config = {
         },
       ],
     },
+    docs: {
+      sidebar: {
+        //autoCollapseCategories: true,
+      },
+    },
     footer: {
       style: 'dark',
       links: [
