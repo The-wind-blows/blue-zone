@@ -55,7 +55,8 @@ import TabItem from '@theme/TabItem';
       </TabItem>
       <TabItem value=".shell" label=".shell">
         ```python
-        export OPENAI_API_KEY="your-api-key"
+        export OPENAI_API_KEY="your-api-key"     # mac/Linux
+        setx OPENAI_API_KEY "your_api_key_here"  # windows
         ```
       </TabItem>
     </Tabs>
@@ -76,7 +77,9 @@ import TabItem from '@theme/TabItem';
   </TabItem>
 </Tabs>
 
-要加载.env文件(Windows可新建文本文档后重命名为.env，Linux/Mac可用touch .env)，请使用python dotenv(load_dotenv())。
+每个OpenAI SDK都会自动从系统环境中读取你的API密钥， 但是deepseek需要显示的传递API密钥，而且deepseek和openai共用一套sdk；
+
+如果要加载.env文件(Windows可新建文本文档后重命名为.env，Linux/Mac可用touch .env)，请使用python dotenv(load_dotenv())。
 ```
 pip install python-dotenv
 ```
