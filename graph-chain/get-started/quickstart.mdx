@@ -17,6 +17,7 @@ import TabItem from '@theme/TabItem';
     ```python
     # Install Python 3.11+ separately if needed.
     pip install -U langchain
+    pip install -U langchain-openai # 这个最好也安装,国产则推荐pip install -U  langchain_deepseek
     ```
   </TabItem>
   <TabItem value="uv" label="uv">
@@ -75,12 +76,25 @@ import TabItem from '@theme/TabItem';
   </TabItem>
 </Tabs>
 
-要加载.env文件，请使用python dotenv(load_dotenv())。
+要加载.env文件(Windows可新建文本文档后重命名为.env，Linux/Mac可用touch .env)，请使用python dotenv(load_dotenv())。
+```
+pip install python-dotenv
+```
+如果使用.env文件， 你还需要：
+```python
+import os
+from dotenv import load_dotenv
+
+load_dotenv() # reads variables from a .env file and sets them in os.environ
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+print(OPENAI_API_KEY)
+```
 
 :::tip[ ]
 <small>
 - 如果你使用的是LangSmith LLM网关，则到提供商的流量将通过LangSmith路由。请使用网关密钥作为API密钥。
 - 不要忘了安装langchain-openai
+- 如果你使用deekseep，可以参考<a href='https://api-docs.deepseek.com/zh-cn/'>deepseek api</a>文档
 </small>
 :::
 
