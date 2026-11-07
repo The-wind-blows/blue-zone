@@ -387,4 +387,43 @@ See <u>HumanInTheLoopMiddleware</u>, <u>Human-in-the-loop</u>.
 
 
 
-最后需要一个完整的例子，包含模型、工具、state、记忆、结构化输出的例子
+最基础的包含模型、工具、提示词、结构化输出、state、context和message持久化， 还需要编一个例子！！！
+```python
+from pydantic import BaseModel
+from langchain.agents import create_agent
+
+class Answer(BaseModel):
+    summary: str
+    confidence: float
+
+class MyState(AgentState):
+    user_id: str
+    call_count: int
+
+@dataclass
+class Context:
+    user_id: str
+
+@tool
+def search(query: str) -> str:
+    """Search for information."""
+    return f"Results for: {query}"
+
+agent = create_agent(
+    model="openai:gpt-5.5", 
+    tools=tools, 
+    system_prompt="You are a helpful assistant. Be concise and accurate.",
+    response_format=Answer,
+    state_schema=MyState,
+    context_schema=Context,
+    checkpointer=InMemorySaver(),
+)
+
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "Summarize AI trends"}]},
+    config={"configurable": {"thread_id": str(uuid7())}},
+    context=Context(user_id="user-123"),
+)
+result["structured_response"]  # Answer(summary=..., confidence=...)
+```
+
