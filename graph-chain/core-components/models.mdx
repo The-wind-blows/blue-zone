@@ -2,9 +2,57 @@
 sidebar_position: 2
 ---
 
-# Models
+# 模型
 
 LLM是强大的人工智能工具，可以像人类一样解释和生成文本。他们足够多才多艺，可以编写内容、翻译语言、总结和回答问题，而不需要为每项任务进行专门培训。
+
+除文本生成外，许多模型还支持：
+- 工具调用——调用外部工具（如数据库查询或API调用）并在响应中使用其结果。
+- 结构化输出——模型的响应受限于预定义的格式。
+- 多模态——处理并返回除文本外的其他数据，如图像、音频和视频。
+- 推理——模型通过多步推理得出结论。
+
+模型是智能体的推理引擎。它们驱动智能体的决策过程，决定调用哪些工具、如何解读结果以及何时给出最终答案。
+
+你所选模型的质量与能力会直接影响代理的基准可靠性与性能。不同模型在不同任务上表现卓越——有的擅长遵循复杂指令，有的长于结构化推理，还有些支持更大的上下文窗口以处理更多信息。
+
+LangChain的标准模型接口让你能够轻松访问多种不同的供应商集成，便于实验和切换模型，以找到最适合你使用场景的方案。
+
+如需了解特定供应商的集成信息与功能，请参阅供应商的聊天模型页面。
+
+:::tip
+LangSmith跟踪每个模型调用，以便你可以比较提供程序、检查工具路由和调试故障。按照跟踪快速入门进行设置。
+我们建议您还设置LangSmith引擎，该引擎可以监视您的跟踪、检测问题并提出修复方案。
+:::
+
+## 基础用法
+
+模型可以通过两种方式使用：
+- 使用agent-在创建agent时可以动态指定模型。
+- 独立-模型可以直接调用（在agent循环之外），用于文本生成、分类或提取等任务，而不需要agent框架。
+相同的模型接口在这两种情况下都有效，这使你可以根据需要灵活地启动简单的、扩展到更复杂的基于agent的工作流。
+
+### 初始化模型
+在LangChain中开始使用独立模型的最简单方法是使用init_chat_model从你选择的聊天模型提供程序初始化一个模型（以下示例）：
+
+```python
+pip install -U "langchain[openai]"
+```
+
+```python
+import os
+from langchain.chat_models import init_chat_model
+from langchain_openai import ChatOpenA
+
+os.environ["OPENAI_API_KEY"] = "sk-..."
+
+model1 = init_chat_model("gpt-6.1-sol")  # 这两种方式都可以
+model2 = ChatOpenAI(model="gpt-6.1-sol")
+
+response = model1.invoke("Why do parrots talk?")
+response = model2.invoke("Why do parrots talk?")
+```
+有关更多详细信息，包括如何传递模型参数的信息，请参阅init_chat_model。
 
 
 
