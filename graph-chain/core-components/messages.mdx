@@ -2,7 +2,138 @@
 sidebar_position: 3
 ---
 
-# Messages
+# 消息
 
 Messages是LangChain中模型的基本上下文单位。它们代表模型的输入和输出，携带与LLM交互时表示对话状态所需的内容和元数据。
 
+消息是包含以下内容的对象：
+- 角色-标识消息类型（例如系统、用户）
+- 内容-表示消息的实际内容（如文本、图像、音频、文档等）
+- 元数据-可选字段，如响应信息、消息ID和令牌使用情况
+
+LangChain提供了一种标准消息类型，适用于所有模型提供者，确保无论调用何种模型，行为都是一致的。
+
+
+## 基本用法
+
+使用消息的最简单方法是创建消息对象，并在调用时将其传递给模型。
+```python
+from langchain.chat_models import init_chat_model
+from langchain.messages import HumanMessage, AIMessage, SystemMessage
+
+model = init_chat_model("gpt-5-nano")
+
+system_msg = SystemMessage("You are a helpful assistant.")
+human_msg = HumanMessage("Hello, how are you?")
+
+# Use with chat models
+messages = [system_msg, human_msg]
+response = model.invoke(messages)  # Returns AIMessage
+```
+
+### 文本提示词
+
+文本提示是字符串，非常适合于不需要保留对话历史的直接生成任务。
+```python
+response = model.invoke("Write a haiku about spring")
+```
+
+在以下情况下使用文本提示词：
+- 你有一个单独的请求
+- 你不需要对话历史记录
+- 你想要最小的代码复杂性
+
+### 消息提示词
+或者，你可以通过提供消息对象列表将消息列表传递给模型。
+```python
+from langchain.messages import SystemMessage, HumanMessage, AIMessage
+
+messages = [
+    SystemMessage("You are a poetry expert"),
+    HumanMessage("Write a haiku about spring"),
+    AIMessage("Cherry blossoms bloom...")
+]
+response = model.invoke(messages)
+```
+
+在以下情况下使用消息提示：
+- 管理多回合对话
+- 处理多模态内容（图像、音频、文件）
+- 包括系统说明
+
+### 字典格式
+你还可以直接以OpenAI聊天完成格式指定消息。
+```python
+messages = [
+    {"role": "system", "content": "You are a poetry expert"},
+    {"role": "user", "content": "Write a haiku about spring"},
+    {"role": "assistant", "content": "Cherry blossoms bloom..."}
+]
+response = model.invoke(messages)
+```
+
+## 消息类型
+
+- 系统消息-告诉模型如何行为并为交互提供上下文
+- 人工消息-表示用户输入和与模型的交互
+- AI消息-模型生成的响应，包括文本内容、工具调用和元数据
+- 工具消息-表示工具调用的输出
+
+### 系统消息
+
+SystemMessage表示启动模型行为的初始指令集。你可以使用系统消息来设定基调，定义模型的角色，并为响应制定指导方针。
+```python
+system_msg = SystemMessage("You are a helpful coding assistant.")
+
+messages = [
+    system_msg,
+    HumanMessage("How do I create a REST API?")
+]
+response = model.invoke(messages)
+```
+
+```python
+from langchain.messages import SystemMessage, HumanMessage
+
+system_msg = SystemMessage("""
+You are a senior Python developer with expertise in web frameworks.
+Always provide code examples and explain your reasoning.
+Be concise but thorough in your explanations.
+""")
+
+messages = [
+    system_msg,
+    HumanMessage("How do I create a REST API?")
+]
+response = model.invoke(messages)
+```
+
+### 人工消息
+### AI消息
+### 工具消息
+
+### 消息内容
+
+## 序列化
+
+你可以将消息序列化为纯对象进行存储，并反序列化回消息实例。这对于保存对话历史记录和恢复会话非常有用。
+```python
+from langchain.messages import HumanMessage
+from langchain_core.load import dumpd, load
+
+message = HumanMessage("What is the capital of France?")
+
+# Serialize to a plain dict
+serialized = dumpd(message)
+
+# Deserialize back to a message object
+restored = load(serialized)
+```
+
+
+## 与聊天模特一起使用
+聊天模型接受一系列消息对象作为输入，并返回AIMessage作为输出。交互通常是无状态的，因此一个简单的会话循环涉及调用一个包含不断增长的消息列表的模型。
+
+请参阅以下指南以了解更多信息：
+- 用于持久化和管理对话历史的内置功能
+- 管理上下文窗口的策略，包括修剪和总结消息

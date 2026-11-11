@@ -2,8 +2,61 @@
 sidebar_position: 4
 ---
 
-# Tools
+# 工具
 
 工具扩展了agent可以做的事情——让他们获取实时数据、执行代码、查询外部数据库，并在真实世界上采取行动。
 
 在底层，工具是可调用的函数，具有定义良好的输入和输出，这些输入和输出被传递给聊天模型。该模型根据对话上下文决定何时调用工具，以及提供哪些输入参数。
+
+
+## 创建工具
+
+### 基础工具定义
+创建工具最简单的方法是使用@tool装饰器。默认情况下，函数的docstring成为工具的描述，帮助模型理解何时使用它：
+```python
+from langchain.tools import tool
+
+@tool
+def search_database(query: str, limit: int = 10) -> str:
+    """Search the customer database for records matching the query.
+
+    Args:
+        query: Search terms to look for
+        limit: Maximum number of results to return
+    """
+    return f"Found {limit} results for '{query}'"
+```
+
+类型提示是必需的，因为它们定义了工具的输入模式。文档字符串应该信息丰富且简洁，以帮助模型理解工具的目的。
+
+### 自定义工具属性
+
+### 高级schema定义
+
+### 保留参数名
+
+
+
+## 访问上下文
+
+当工具可以访问会话历史、用户数据和持久内存等运行时信息时，它们是最强大的。本节介绍如何从工具中访问和更新此信息。
+
+工具可以通过ToolRuntime参数访问运行时信息，该参数提供：
+
+
+## 工具执行
+
+## 动态工具选择
+
+## Headless tools
+有些工具应该在用户应用程序运行的地方（通常是浏览器）运行，而不是在流程中运行。
+无头工具是工具定义，包括名称、描述和参数架构，你可以在服务器上向agent注册。该实现仅在客户端上注册，并在短暂的中断/恢复握手后执行。
+
+
+## Prebuilt tools
+
+
+## Tools from MCP servers
+
+## Server-side tool use
+
