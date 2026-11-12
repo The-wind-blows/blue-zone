@@ -192,6 +192,13 @@ for snapshot in stream.values:
         print(f"Calling tools: {[tc['name'] for tc in latest_message.tool_calls]}")
 ```
 
+:::tip
+<small>
+有关流模式、事件类型和UI模式，请参阅<a href='https://docs.langchain.com/oss/python/langchain/streaming'>流</a>
+</small>
+:::
+
+
 ## Configure the harness
 
 create_agent具有高度的可扩展性。中间件是定制的基础：每个部分处理一个关注点，在适当的时候挂入agent循环，并与任何其他部分自由组合。准确把握你的用例需求，跳过其余部分。
@@ -206,6 +213,14 @@ create_agent具有高度的可扩展性。中间件是定制的基础：每个�
 - Fault tolerance: Retries, fallbacks, and call limits
 - Guardrails: PII detection and content controls
 - Steering: Human-in-the-loop approval before high-impact actions
+
+:::tip
+<small>
+create_deep_agent为长时间运行的编码和研究任务预组装此堆栈(默认包括文件系统、摘要、子代理和提示词缓存)。有关完整的预构建工具，
+请参阅<a href='https://docs.langchain.com/oss/python/langchain/streaming'>deep agents</a>。
+</small>
+:::
+
 
 ### 执行环境
 当agent可以采取行动而不仅仅是生成文本时，它们特别有用。执行环境为agent提供了一个工作区：它可以调用的工具、用于跨轮次读写文件的文件系统，以及用于运行脚本或shell命令的代码执行。
@@ -253,7 +268,7 @@ agent = create_agent(
 )
 ```
 
-See <u>SummarizationMiddleware</u>, <u>MemoryMiddleware</u>, <u>Skills</u>, <u> Context engineering</u> .
+参阅 <u>SummarizationMiddleware</u>, <u>MemoryMiddleware</u>, <u>Skills</u>, <u> Context engineering</u> .
 
 :::info[]
 此示例从deepagents包导入。使用时安装：
@@ -304,7 +319,7 @@ agent = create_agent(
 )
 ```
 
-See <u>Subagents</u>.
+参阅  <u>Subagents</u>.
 
 :::info[]
 此示例从deepagents包导入。使用时安装：
@@ -341,7 +356,7 @@ agent = create_agent(
 )
 ```
 
-See <u>ModelRetryMiddleware</u>, <u>ToolRetryMiddleware</u>, <u>Prebuilt middleware</u>.
+参阅  <u>ModelRetryMiddleware</u>, <u>ToolRetryMiddleware</u>, <u>Prebuilt middleware</u>.
 
 ### 护栏
 有些政策不能一蹴而就——无论模型做什么，都需要果断地执行。护栏(Guardrails)在数据流经agent循环时拦截数据，在工具结果到达模型上下文之前应用合规规则或内容策略。
@@ -361,7 +376,7 @@ agent = create_agent(
     middleware=[PIIMiddleware("email")],
 )
 ```
-See <u>PIIMiddleware</u>, <u>Prebuilt middleware</u>.
+参阅  <u>PIIMiddleware</u>, <u>Prebuilt middleware</u>.
 
 ### Steering
 
@@ -382,12 +397,12 @@ agent = create_agent(
     middleware=[HumanInTheLoopMiddleware(interrupt_on={"write_file": True})],
 )
 ```
-See <u>HumanInTheLoopMiddleware</u>, <u>Human-in-the-loop</u>.
+参阅 <u>HumanInTheLoopMiddleware</u>, <u>Human-in-the-loop</u>.
 
 
+## 自制demo
 
-
-最基础的包含模型、工具、提示词、结构化输出、state、context和message持久化， 还需要编一个例子！！！
+最基础的包含模型、工具、提示词、结构化输出、state、context和message持久化， 这只是演示！！！
 ```python
 from pydantic import BaseModel
 from langchain.agents import create_agent

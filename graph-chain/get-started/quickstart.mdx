@@ -9,6 +9,15 @@ import TabItem from '@theme/TabItem';
 
 本快速入门向你展示了如何在短短几分钟内创建一个功能齐全的AI agent。
 
+
+:::tip[使用AI编程助手?]
+<small>
+- 安装<a href='https://api-docs.deepseek.com/zh-cn/'>LangChain Docs MCP servers</a>，让你的agent访问最新的LangChain文档和示例。
+- 安装<a href='https://api-docs.deepseek.com/zh-cn/'>LangChain skills</a>，以提高你的agent在LangChain生态系统任务上的性能。
+</small>
+:::
+
+
 ## 安装依赖
 
 安装以下软件包：
@@ -442,7 +451,7 @@ print(deep_agent_result["messages"][-1].content_blocks)
 
 ## 跟踪agent调用
 
-你用LangChain构建的最有趣的agent会给LLM打很多电话。随着这些agent变得越来越复杂，能够检查agent内部到底发生了什么变得非常重要。最好的办法就是和LangSmith一起。
+你用LangChain构建的最有趣的agent会调用很多LLM。随着这些agent变得越来越复杂，能够检查agent内部到底发生了什么变得非常重要。最好的办法就是和LangSmith一起。
 
 注册LangSmith帐户并设置以下内容以开始记录跟踪：
 ```python
