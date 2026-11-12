@@ -2,6 +2,9 @@
 sidebar_position: 3
 ---
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
 # 消息
 
 Messages是LangChain中模型的基本上下文单位。它们代表模型的输入和输出，携带与LLM交互时表示对话状态所需的内容和元数据。
@@ -12,7 +15,7 @@ Messages是LangChain中模型的基本上下文单位。它们代表模型的输
 - 元数据-可选字段，如响应信息、消息ID和令牌使用情况
 
 LangChain提供了一种标准消息类型，适用于所有模型提供者，确保无论调用何种模型，行为都是一致的。
-
+ 
 
 ## 基本用法
 
@@ -30,6 +33,15 @@ human_msg = HumanMessage("Hello, how are you?")
 messages = [system_msg, human_msg]
 response = model.invoke(messages)  # Returns AIMessage
 ```
+
+:::tip
+<small>
+多轮对话agent积累了很长的消息历史。LangSmith记录每个回合、工具结果和模型响应，以便你可以检查完整的对话。按照<a href=''>tracing quickstart</a>启用跟踪。
+我们还建议你设置LangSmith引擎，该引擎可以监视你的跟踪、检测问题并提出修复方案。
+</small>
+:::
+
+
 
 ### 文本提示词
 
@@ -58,7 +70,7 @@ response = model.invoke(messages)
 
 在以下情况下使用消息提示：
 - 管理多回合对话
-- 处理多模态内容（图像、音频、文件）
+- 处理多模态内容(图像、音频、文件)
 - 包括系统说明
 
 ### 字典格式
@@ -109,10 +121,434 @@ response = model.invoke(messages)
 ```
 
 ### 人工消息
-### AI消息
-### 工具消息
+HumanMessage表示用户输入和交互。它们可以包含文本、图像、音频、文件和任何其他数量的多模态内容
 
-### 消息内容
+#### 文本内容
+<Tabs>
+  <TabItem value="Message object" label="Message object" default>
+    ```python
+    response = model.invoke([
+      HumanMessage("What is machine learning?")
+    ])
+    ```
+  </TabItem>
+  <TabItem value="String shortcut" label="String shortcut">
+    ```python
+    # Using a string is a shortcut for a single HumanMessage
+    response = model.invoke("What is machine learning?")
+    ```
+  </TabItem>
+</Tabs>
+
+#### 消息元数据
+```python title='add meadata'
+human_msg = HumanMessage(
+    content="Hello!",
+    name="alice",  # Optional: identify different users
+    id="msg_123",  # Optional: unique identifier for tracing
+)
+```
+
+:::info
+<small>
+名称字段的行为因提供程序而异——有些将其用于用户标识，有些则忽略它。要检查，请参阅模型提供程序的<a href=''>reference</a>。
+</small>
+:::
+
+
+### AI消息
+AIMessage表示模型调用的输出。它们可以包括多模态数据、工具调用和稍后可以访问的特定于提供商的元数据。
+```python
+response = model.invoke("Explain AI")
+print(type(response))  # <class 'langchain.messages.AIMessage'>
+```
+AIMessage对象在调用模型时由模型返回，其中包含响应中的所有相关元数据。
+
+提供者对消息类型进行不同的权衡/上下文化，这意味着有时手动创建一个新的AIMessage对象并将其插入消息历史记录中是有帮助的，就像它来自模型一样。
+```python
+from langchain.messages import AIMessage, SystemMessage, HumanMessage
+
+# Create an AI message manually (e.g., for conversation history)
+ai_msg = AIMessage("I'd be happy to help you with that question!")
+
+# Add to conversation history
+messages = [
+    SystemMessage("You are a helpful assistant"),
+    HumanMessage("Can you help me?"),
+    ai_msg,  # Insert as if it came from the model
+    HumanMessage("Great! What's 2+2?")
+]
+
+response = model.invoke(messages)
+```
+
+<details>
+  <summary>属性</summary>
+- text string : 消息的文本内容
+- content string | dict[] : 消息的原始内容
+- content_blocks ContentBlock[] : 消息的标准化内容块
+- tool_calls dict[] | None : 模型进行的工具调用。如果没有调用工具，则为空。
+- id string : 消息的唯一标识符(由LangChain自动生成或在提供者响应中返回)
+- usage_metadata dict | None : 消息的使用元数据，其中可以包含可用的token计数
+- response_metadata ResponseMetadata | None : 消息的响应元数据
+</details>
+
+#### 工具调用
+当模型调用工具时，它们会包含在AIMessage中:
+```python
+from langchain.chat_models import init_chat_model
+
+model = init_chat_model("gpt-5-nano")
+
+def get_weather(location: str) -> str:
+    """Get the weather at a location."""
+    ...
+
+model_with_tools = model.bind_tools([get_weather])
+response = model_with_tools.invoke("What's the weather in Paris?")
+
+for tool_call in response.tool_calls:
+    print(f"Tool: {tool_call['name']}")
+    print(f"Args: {tool_call['args']}")
+    print(f"ID: {tool_call['id']}")
+```
+
+其他结构化数据，如推理或引用，也可以出现在消息内容中。
+
+#### token用量
+AIMessage可以在其usage_metadata字段中保存token计数和其他usage_metadata字段：
+```python
+from langchain.chat_models import init_chat_model
+
+model = init_chat_model("gpt-5-nano")
+
+response = model.invoke("Hello!")
+response.usage_metadata
+```
+
+```
+{'input_tokens': 8,
+ 'output_tokens': 304,
+ 'total_tokens': 312,
+ 'input_token_details': {'audio': 0, 'cache_read': 0},
+ 'output_token_details': {'audio': 0, 'reasoning': 256}}
+```
+
+详细信息请参阅<a href=''>UsageMetadata</a>
+
+#### Streaming and chunks
+在流式传输过程中，你将收到AIMessageChunk对象，这些对象可以组合成一个完整的消息对象：
+```python
+chunks = []
+full_message = None
+for chunk in model.stream("Hi"):
+    chunks.append(chunk)
+    print(chunk.text)
+    full_message = chunk if full_message is None else full_message + chunk
+```
+
+:::info[Learn more]
+<small>
+- <a href='https://docs.langchain.com/oss/python/langchain/models#stream'>Streaming tokens from chat models</a>
+- <a href='https://docs.langchain.com/oss/python/langchain/streaming'>Streaming tokens and/or steps from agents</a>
+</small>
+:::
+
+
+### 工具消息
+对于支持工具调用的模型，AI消息可以包含工具调用。工具消息用于将单个工具执行的结果传递回模型。
+
+工具可以直接生成ToolMessage对象。下面，我们展示一个简单的例子。阅读工具指南中的更多内容。
+```python
+from langchain.messages import AIMessage
+from langchain.messages import ToolMessage
+
+# After a model makes a tool call
+# (Here, we demonstrate manually creating the messages for brevity)
+ai_message = AIMessage(
+    content=[],
+    tool_calls=[{
+        "name": "get_weather",
+        "args": {"location": "San Francisco"},
+        "id": "call_123"
+    }]
+)
+
+# Execute tool and create result message
+weather_result = "Sunny, 72°F"
+tool_message = ToolMessage(
+    content=weather_result,
+    tool_call_id="call_123"  # Must match the call ID
+)
+
+# Continue conversation
+messages = [
+    HumanMessage("What's the weather in San Francisco?"),
+    ai_message,  # Model's tool call
+    tool_message,  # Tool execution result
+]
+response = model.invoke(messages)  # Model processes the result
+```
+
+<details>
+  <summary>属性</summary>
+- content string required : 工具调用的字符串化输出。
+- tool_call_id string required : 此消息正在响应的工具调用的ID。必须与AIMessage中的工具调用ID匹配。
+- name string required : 被调用的工具的名称。
+- artifact dict :  其他数据不会发送到模型，但可以通过编程访问。
+</details>
+
+
+:::info
+artifact字段存储补充数据，这些数据不会发送到模型，但可以通过编程访问。这对于存储原始结果、调试信息或数据以供下游处理非常有用，而不会混淆模型的上下文。
+
+
+<details>
+  <summary> 示例：使用artifact检索metadata </summary>
+
+  例如，检索工具可以从文档中检索一段文章，供模型参考。如果消息内容包含模型将引用的文本，则artifact可以包含文档标识符或应用程序可以使用的其他元数据(例如，呈现页面)。请参阅以下示例：
+```python
+from langchain.messages import ToolMessage
+
+# Sent to model
+message_content = "It was the best of times, it was the worst of times."
+
+# Artifact available downstream
+artifact = {"document_id": "doc_123", "page": 0}
+
+tool_message = ToolMessage(
+    content=message_content,
+    tool_call_id="call_123",
+    name="search_books",
+    artifact=artifact,
+)
+```
+有关使用LangChain构建检索agent的端到端示例，请参阅RAG教程。
+</details>
+:::
+
+
+## 消息内容
+你可以将消息的内容视为发送到模型的数据的有效载荷。消息具有松散类型的内容属性，支持字符串和非类型化对象列表(例如字典)。这允许在LangChain聊天模型中直接支持提供商原生结构，如多模态内容和其他数据。
+
+另外，LangChain为文本、推理、引用、多模态数据、服务器端工具调用和其他消息内容提供了专用的内容类型。请参阅下面的内容块。
+
+LangChain聊天模型在content属性中接受消息内容。这可能包含以下任一内容：
+1. 一个字符串
+2. 供应商原生格式的内容块列表
+3. LangChain标准内容块列表
+
+使用多模态输入的示例见下文：
+```python
+from langchain.messages import HumanMessage
+
+# String content
+human_message = HumanMessage("Hello, how are you?")
+
+# Provider-native format (e.g., OpenAI)
+human_message = HumanMessage(content=[
+    {"type": "text", "text": "Hello, how are you?"},
+    {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}
+])
+
+# List of standard content blocks
+human_message = HumanMessage(content_blocks=[
+    {"type": "text", "text": "Hello, how are you?"},
+    {"type": "image", "url": "https://example.com/image.jpg"},
+])
+```
+
+:::info
+<small>
+初始化消息时指定content_blocks仍将填充消息内容，但为此提供了一个类型安全的接口。
+</small>
+:::
+
+### 标准内容块
+LangChain为跨提供商工作的消息内容提供了一种标准表示。
+
+消息对象实现了一个content_blocks属性，该属性将延迟地将内容属性解析为标准的类型安全表示。例如，从ChatAnthropic或ChatOpenAI生成的消息将包括相应提供者格式的思考或推理块，
+但可以延迟解析为一致的ReasoningContentBlock表示：
+<Tabs>
+  <TabItem value="Anthropic" label="Anthropic" default>
+    ```python
+    from langchain.messages import AIMessage
+
+    message = AIMessage(
+        content=[
+            {"type": "thinking", "thinking": "...", "signature": "WaUjzkyp..."},
+            {"type": "text", "text": "..."},
+        ],
+        response_metadata={"model_provider": "anthropic"}
+    )
+    message.content_blocks
+    ```
+  </TabItem>
+  <TabItem value="OpenAI" label="OpenAI">
+    ```python
+    from langchain.messages import AIMessage
+
+    message = AIMessage(
+        content=[
+            {
+                "type": "reasoning",
+                "id": "rs_abc123",
+                "summary": [
+                    {"type": "summary_text", "text": "summary 1"},
+                    {"type": "summary_text", "text": "summary 2"},
+                ],
+            },
+            {"type": "text", "text": "...", "id": "msg_abc123"},
+        ],
+        response_metadata={"model_provider": "openai"}
+    )
+    message.content_blocks
+    ```
+  </TabItem>
+</Tabs>
+
+```python
+[{'type': 'reasoning', 'id': 'rs_abc123', 'reasoning': 'summary 1'},
+ {'type': 'reasoning', 'id': 'rs_abc123', 'reasoning': 'summary 2'},
+ {'type': 'text', 'text': '...', 'id': 'msg_abc123'}]
+```
+
+请参阅<a href='https://docs.langchain.com/oss/python/integrations/providers/overview'>integrations guides</a>，以开始使用你选择的推理提供程序。
+
+:::info[序列化标准内容]
+<small>
+如果LangChain之外的应用程序需要访问标准内容块表示，你可以选择在消息内容中存储内容块。
+为此，你可以将LC_OUTPUT_VERSION环境变量设置为v1。或者，使用output_version=“v1”初始化任何聊天模型：
+```python
+from langchain.chat_models import init_chat_model
+
+model = init_chat_model("gpt-5-nano", output_version="v1")
+```
+</small>
+:::
+
+### 多模态
+多模态是指处理不同形式的数据的能力，如文本、音频、图像和视频。LangChain为这些数据提供了标准类型，可供跨提供商使用。
+
+聊天模型可以接受多模态数据作为输入，并将其作为输出生成。下面我们展示了以多模态数据为特征的输入消息的简短示例。
+
+:::info[序列化标准内容]
+<small>
+额外的键可以包含在内容块的顶层，也可以嵌套在“extrass”中。
+例如，OpenAI需要PDF文件名。有关详细信息，请参阅所选模型的提供商页面。
+</small>
+:::
+
+
+<Tabs>
+  <TabItem value="image-pdf" label="image-pdf" default>
+```python
+# From URL
+messages = [
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Describe the content of this image."},
+            {"type": "image", "url": "https://example.com/path/to/image.jpg"},
+        ]
+    },{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Describe the content of this image."},
+            {"type": "image", "base64": "AAAAIGZ0eXBtcDQyAAAAAGlzb21tcDQyAAACAGlzb2...", "mime_type": "image/jpeg",},
+        ]
+    }, {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Describe the content of this image."},
+            {"type": "image", "file_id": "file-abc123"},
+        ]
+    },{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Describe the content of this document."},
+            {"type": "file", "url": "https://example.com/path/to/document.pdf"},
+        ]
+    }, {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Describe the content of this document."},
+            {"type": "file", "base64": "AAAAIGZ0eXBtcDQyAAAAAGlzb21tcDQyAAACAGlzb2...", "mime_type": "application/pdf",},
+        ]
+    },{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Describe the content of this document."},
+            {"type": "file", "file_id": "file-abc123"},
+        ]
+    },
+]
+``` 
+  </TabItem>
+  <TabItem value="audio-video" label="audio-video">
+```python
+# From base64 data
+messages = [
+    {
+        "role": "user",
+        "content": [
+            {"type": "text",  "text": "Describe the content of this audio."},
+            {"type": "audio", "base64": "AAAAIGZ0eXBtcDQyAAAAAGlzb21tcDQyAAACAGlzb2...",  "mime_type": "audio/wav",},
+        ]
+    },{
+        "role": "user",
+        "content": [
+            {"type": "text",  "text": "Describe the content of this audio."},
+            {"type": "audio", "file_id": "file-abc123"},
+        ]
+    },{
+        "role": "user",
+        "content": [
+            {"type": "text",  "text": "Describe the content of this video."},
+            {"type": "video", "base64": "AAAAIGZ0eXBtcDQyAAAAAGlzb21tcDQyAAACAGlzb2...",  "mime_type": "video/mp4",},
+        ]
+    },{
+        "role": "user",
+        "content": [
+            {"type": "text",  "text": "Describe the content of this video."},
+            {"type": "video", "file_id": "file-abc123"},
+        ]
+    },
+]
+```  
+  </TabItem>
+</Tabs>
+
+:::warning
+<small>
+并非所有模型都支持所有文件类型。检查模型提供商的指南，了解支持的格式和大小限制。
+</small>
+:::
+
+
+
+### 内容块引用
+内容块(在创建消息或访问Content_blocks属性时)表示为类型化字典的列表。列表中的每个项目都必须符合以下块类型之一：
+- Core
+- Multimodal
+- Tool Calling
+- Server-Side Tool Execution
+- Providers-Specific Blocks
+
+:::tip
+<small>
+查看API引用中的规范类型定义。
+</small>
+:::
+
+:::info
+<small>
+在LangChain v1中，内容块作为消息的一个新属性被引入，以在保持与现有代码向后兼容的同时，跨提供商标准化内容格式。
+内容块不是内容属性的替代品，而是一种新的属性，可用于以标准化格式访问消息的内容。
+</small>
+:::
+
+
 
 ## 序列化
 
@@ -130,8 +566,13 @@ serialized = dumpd(message)
 restored = load(serialized)
 ```
 
+:::warning
+<small>
+load()实例化Python对象，并在反序列化过程中触发副作用。切勿对来自不受信任或未经身份验证的源的数据调用load()。
+</small>
+:::
 
-## 与聊天模特一起使用
+## 与聊天模型一起使用
 聊天模型接受一系列消息对象作为输入，并返回AIMessage作为输出。交互通常是无状态的，因此一个简单的会话循环涉及调用一个包含不断增长的消息列表的模型。
 
 请参阅以下指南以了解更多信息：
