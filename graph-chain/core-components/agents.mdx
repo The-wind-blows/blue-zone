@@ -2,7 +2,7 @@
 sidebar_position: 1
 ---
 
-# Agents
+# 智能体
 
 agent是一个在循环中调用工具的模型，直到给定的任务完成。
 <center> ![Docs Version Dropdown](./img/agents.png) </center>
@@ -26,11 +26,11 @@ Managed Deep Agents基于create_agent构建，并具有已经组装好的常用�
 请使用Deep Agent并自己运营，或运行自定义的LangSmith部署。当你需要自己配置较小的harness时，请使用create_agent。
 :::
 
-## Core components
+## 核心组件
 
 <center> ![Docs Version Dropdown](./img/core-components.png) </center>
 
-### Model
+### 模型
 传递一个模型标识符字符串（“provider:model”）或一个初始化的模型实例，为你的agent选择模型。有关参数、提供程序设置和动态模型选择，请参阅模型教程。
 ```python
 from langchain.agents import create_agent
@@ -38,7 +38,7 @@ from langchain.agents import create_agent
 agent = create_agent(model="openai:gpt-5.5", tools=tools)
 ```
 
-### Tools
+### 工具
 要为agent提供tool，请传递任何Python可调用函数、LangChain tool或工具字典。有关工具定义、上下文访问和动态工具选择，请参阅工具教程。
 ```python
 from langchain.agents import create_agent
@@ -52,8 +52,8 @@ def search(query: str) -> str:
 agent = create_agent(model="openai:gpt-5.5", tools=[search])
 ```
 
-### System prompt
-塑造agent处理任务的方式。系统提示词参数接受字符串或SystemMessage。对于运行时的动态提示词，请使用中间件。
+### 系统提示词
+塑造agent处理任务的方式。系统提示词参数接受**字符串**或**SystemMessage**。对于运行时的动态提示词，请使用中间件。
 ```python
 agent = create_agent(
     model="openai:gpt-5.5",
@@ -62,7 +62,7 @@ agent = create_agent(
 )
 ```
 
-### Structured output
+### 结构化输出
 使用`response_format=`从agent返回已验证的架构。有关策略和示例，请参阅结构化输出。
 ```python
 from pydantic import BaseModel
@@ -77,8 +77,8 @@ result = agent.invoke({"messages": [{"role": "user", "content": "Summarize AI tr
 result["structured_response"]  # Answer(summary=..., confidence=...)
 ```
 
-### Agent state
-每个agent都通过AgentState管理其执行上下文，`AgentState`是一个类型化字典，保存当前对话历史以及你的工具和中间件所需的任何自定义字段。
+### Agent状态
+每个agent都通过AgentState管理其执行上下文，`AgentState`是一个类型化字典，保存**当前会话历史**以及你的工具和中间件所需的任何**自定义字段**。
 
 内置字段为：
 | Field | Type | Description |
@@ -105,7 +105,7 @@ agent = create_agent(
 有关完整的详细信息、示例和中间件级状态模式，请参阅短期记忆和自定义中间件。
 
 
-## Invocation
+## 调用
 
 :::tip[]
 跟踪此循环的每个步骤，调试工具调用，并使用LangSmith评估agent输出。按照跟踪快速入门进行设置。我们建议你设置LangSmith引擎，该引擎可以监视你的跟踪、检测问题并提出修复方案。
@@ -170,7 +170,7 @@ result = agent.invoke(
 
 thread_id作用于对话(message history、checkpointer)，而上下文携带你的工具和中间件在调用时读取的每次运行的数据。两者通常一起传递。有关更多信息，请参阅工具上下文和运行时。
 
-## Streaming
+## 流
 
 invoke在运行结束时返回最终响应。如果agent执行多个工具调用，用户通常需要在完成之前更新进度。使用streaming在中间消息和工具活动发生时显示出来。
 ```python
@@ -199,7 +199,7 @@ for snapshot in stream.values:
 :::
 
 
-## Configure the harness
+## 配置harness
 
 create_agent具有高度的可扩展性。中间件是定制的基础：每个部分处理一个关注点，在适当的时候挂入agent循环，并与任何其他部分自由组合。准确把握你的用例需求，跳过其余部分。
 
@@ -403,6 +403,7 @@ agent = create_agent(
 ## 自制demo
 
 最基础的包含模型、工具、提示词、结构化输出、state、context和message持久化， 这只是演示！！！
+模型的定义和调用、提示词分类、四类消息和内容、工具的定义返回值、runtime中的state、context、store
 ```python
 from pydantic import BaseModel
 from langchain.agents import create_agent

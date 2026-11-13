@@ -2,6 +2,9 @@
 sidebar_position: 5
 ---
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
 # 短期记忆
 
 
@@ -10,7 +13,11 @@ sidebar_position: 5
 memory是一个能记住以前交互信息的系统。对于AI Agent来说，记忆至关重要，因为它可以让他们记住之前的交互，从反馈中学习，并适应用户偏好。 
 随着代理处理具有大量用户交互的更复杂的任务，这种能力对于效率和用户满意度都变得至关重要。
 
-短期记忆让您的应用程序记住单个线程或对话中的先前交互。
+短期记忆让你的应用程序记住单个线程或对话中的先前交互。
+
+:::info
+一个线程在会话中组织多个交互，类似于电子邮件在单个对话中对消息进行分组的方式。
+:::
 
 会话历史是短期记忆最常见的形式。长对话对今天的大模型(LLM)提出了挑战。完整的历史记录可能无法放入LLM的上下文窗口中，从而导致上下文丢失或错误。
 
@@ -19,11 +26,140 @@ memory是一个能记住以前交互信息的系统。对于AI Agent来说，记
 聊天模型使用message接受上下文，其中包括指令（系统消息）和输入（人工消息）。在聊天应用程序中，消息在人工输入和模型响应之间交替，导致消息列表随着时间的推移而变长。
 由于上下文窗口有限，许多应用可以从使用删除或“忘记”过时信息的技术中受益。
 
+:::tip
+需要记住对话中的信息吗？使用长期记忆跨不同线程和会话存储和调用用户特定或应用程序级数据。
+:::
+
 
 ## 用法
+要向agent添加短期记忆(线程级持久性)，你需要在创建agent时指定一个checkpointer。
 
-要向agent添加短期记忆（线程级持久性），你需要在创建agent时指定一个checkpointer。
+:::info
+LangChain的agent将短期记忆作为agent状态的一部分进行管理。
 
+通过将这些存储在图的状态中，agent可以访问给定对话的完整上下文，同时保持不同线程之间的分离。
+
+使用checkpointer将状态持久化到数据库(或内存)，以便可以随时恢复线程。
+
+当调用agent或完成一个步骤（如工具调用）时，短期内存会更新，并在每个步骤开始时读取状态。
+:::
+
+```python
+from langchain.agents import create_agent
+from langgraph.checkpoint.memory import InMemorySaver  
+
+def get_user_info() -> str:
+    """Look up information about the current user."""
+    return "No user profile on file."
+
+agent = create_agent(
+    model="openai:gpt-6.1-sol",
+    tools=[get_user_info],
+    checkpointer=InMemorySaver(),  
+)
+
+thread_config = {"configurable": {"thread_id": "1"}}
+response = agent.invoke(
+    {"messages": [{"role": "user", "content": "Hi! My name is Bob."}]},
+    thread_config,  
+)["messages"][-1].content
+
+print(response)  # "Hi Bob! Nice to see you here. How are you doing?"
+
+response = agent.invoke(
+    {"messages": [{"role": "user", "content": "What's my name?"}]},
+    thread_config,  
+)["messages"][-1].content
+
+print(response)  # "You are Bob!"
+```
+
+### 生产
+在生产环境中，使用由数据库支持的checkpoint：
+<Tabs>
+  <TabItem value="pip" label="pip" default>
+    ```python
+    pip install -U langgraph-checkpoint-postgres "psycopg[binary]"
+    ```
+  </TabItem>
+  <TabItem value="uv" label="uv">
+    ```python
+    uv add langgraph-checkpoint-postgres "psycopg[binary]"
+    ```
+  </TabItem>
+</Tabs>
+
+:::info
+默认情况下，langgraph-checkpoint-postgres会安装psycopg(psycopg 3)，而不添加任何额外功能。上面的安装添加了psycopg[binary]，建议大多数用户使用。有关其他选项，请参阅Psycopg安装文档。
+:::
+
+```python
+from langchain.agents import create_agent
+from langgraph.checkpoint.postgres import PostgresSaver  
+
+def get_user_info() -> str:
+    """Look up information about the current user."""
+    return "No user profile on file."
+
+DB_URI = "postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+with PostgresSaver.from_conn_string(DB_URI) as checkpointer:
+    checkpointer.setup() # auto create tables in PostgreSQL
+    agent = create_agent(
+        "gpt-6.1-sol",
+        tools=[get_user_info],
+        checkpointer=checkpointer,  
+    )
+```
+
+:::info
+有关包括SQLite、Postgres和Azure Cosmos DB在内的更多checkpointer选项，请参阅Persistence文档中的checkpointer库列表。
+:::
+
+## 自定义agent记忆
+默认情况下，agent使用AgentState来管理短期记忆，特别是通过消息键管理对话历史。
+
+你可以扩展AgentState以添加其他字段。使用state_schema参数将自定义状态模式传递给create_agent。
+```python
+from langchain.agents import create_agent, AgentState
+from langgraph.checkpoint.memory import InMemorySaver
+
+class CustomAgentState(AgentState):  
+    user_id: str  
+    preferences: dict  
+
+agent = create_agent(
+    "gpt-6.1-sol",
+    tools=[get_user_info],
+    state_schema=CustomAgentState,  
+    checkpointer=InMemorySaver(),
+)
+
+# Custom state can be passed in invoke
+result = agent.invoke(
+    {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "user_id": "user_123",  
+        "preferences": {"theme": "dark"}  
+    },
+    {"configurable": {"thread_id": "1"}})
+```
+
+## 常见模式
+启用短期记忆后，长对话可以超过LLM的上下文窗口。常见的解决方案有：
+- 裁剪消息
+- 删除消息
+- 摘要消息
+- 自定义策略
+
+这允许agent在不超出LLM上下文窗口的情况下跟踪对话。
+
+### 裁剪消息
+大多数LLM都有一个支持的最大上下文窗口(以token表示)。
+
+
+### 删除消息
+
+### 摘要消息
 
 
 
