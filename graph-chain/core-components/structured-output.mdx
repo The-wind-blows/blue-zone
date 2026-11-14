@@ -6,7 +6,7 @@ sidebar_position: 8
 
 本页介绍使用create_agent的agent的结构化输出。要在模型上直接使用结构化输出（在agent之外），请参阅模型部分的结构化输出。
 
-结构化输出允许agent以特定的、可预测的格式返回数据。 您可以获得JSON对象、Pydantic模型或应用程序可以直接使用的数据类形式的结构化数据，而不是解析自然语言形式的响应。
+结构化输出允许agent以特定的、可预测的格式返回数据。 你可以获得JSON对象、Pydantic模型或应用程序可以直接使用的数据类形式的结构化数据，而不是解析自然语言形式的响应。
 
 LangChain的create_agent自动处理结构化输出。 用户设置他们想要的结构化输出模式，当模型生成结构化数据时，它会被捕获、验证，并在agent状态的“structured_response”键中返回。
 
@@ -34,32 +34,56 @@ def create_agent(
 当直接提供schema type时，LangChain会自动选择：
 
 - ProviderStrategy  如果所选的模型和提供者支持原生结构化输出（例如OpenAI、Anthropic（Claude）或xAI（Grok））。
-- ToolStrategy for all other models.
+- ToolStrategy 适用于其它所有模型
 
+:::warning
+<small>
 JSON模式必须封装在显式策略（ProviderStrategy或ToolStrategy）中。当直接传递给response_format时，它们不会被自动检测到。
+</small>
+:::
+
+:::info
+<small>
 如果使用langchain>=1.1，则从模型的配置文件数据中动态读取对结构化输出功能的支持。如果数据不可用，请使用其他条件或手动指定：
+```
+custom_profile = {
+    "structured_output": True,
+    # ...
+}
+model = init_chat_model("...", profile=custom_profile)
+```
 如果指定了工具，则模型必须支持同时使用工具和结构化输出。
+</small>
+:::
 
 结构化响应以agent最终状态的structured_response键返回。
 
-## Provider strategy
+
+## 供应商策略
 
 一些模型提供者通过其API原生支持结构化输出（例如OpenAI、xAI（Grok）、Gemini、Anthropic（Claude））。这是最可靠的方法。
+
 要使用此策略，请配置ProviderStrategy：
 
-```js
+```python
 class ProviderStrategy(Generic[SchemaT]):
     schema: type[SchemaT]
     strict: bool | None = None
-# The strict param requires langchain>=1.2.
-```
-schema定义结构化输出格式, 支持：
-- Pydantic models: BaseModel subclasses with field validation. Returns validated Pydantic instance.
-- Dataclasses: Python dataclasses with type annotations. Returns dict.
-- TypedDict: Typed dictionary classes. Returns dict.
-- JSON Schema: Dictionary with JSON schema specification. Must include top-level title and description keys. Returns dict(字典).
 
-`strict` : 可选布尔参数，用于启用严格的模式遵守。由一些提供商支持（例如OpenAI和xAI）。默认为无（禁用）。
+```
+
+:::info
+The `strict` param requires langchain>=1.2.
+:::
+schema required
+
+schema定义结构化输出格式, 支持：
+- Pydantic models: 具有field验证的BaseModel子类。返回已验证的Pydantic实例。
+- Dataclasses: 带有类型注释的Python数据类。返回字典.
+- TypedDict: 带类型的字典类。返回字典.
+- JSON Schema: 具有JSON模式规范的字典。必须包含顶级标题和描述keys。返回字典.
+
+`strict` : 可选布尔参数，用于启用严格的模式遵守。由一些提供商支持(例如OpenAI和xAI)。默认为无(禁用)。
 
 当你将schema直接传递给create_agent.response_format并且模型支持原生结构化输出时，LangChain会自动使用ProviderStrategy：
 
@@ -93,11 +117,16 @@ result["structured_response"]
 # {'name': 'John Doe', 'email': 'john@example.com', 'phone': '(555) 123-4567'}
 ```
 模型原生的结构化输出提供了高可靠性和严格的验证，因为模型强制执行schema; 可用时使用它。
-
+:::info
+<small>
 如果模型原生支持结构化输出，则其功能等同于编写response_format=ProductReview而不是response_format=ProviderStrategy(ProductReview);
-在任何一种情况下，如果不支持结构化输出，agent将退回到工具调用策略(ToolStrategy[StructuredResponseT])。
 
-## Tool calling strategy
+在任何一种情况下，如果不支持结构化输出，agent将退回到工具调用策略(ToolStrategy[StructuredResponseT])。
+</small>
+:::
+
+
+## 工具调用策略
 
 对于不支持原生结构化输出的模型，LangChain使用工具调用(Tool calling)来实现相同的结果。这适用于支持工具调用的所有模型（大多数现代模型）。
 
@@ -117,22 +146,26 @@ class ToolStrategy(Generic[SchemaT]):
 ```
 
 schema定义结构化输出格式, 支持：
-- Pydantic models: BaseModel subclasses with field validation. Returns validated Pydantic instance.
-- Dataclasses: Python dataclasses with type annotations. Returns dict.
-- TypedDict: Typed dictionary classes. Returns dict.
-- JSON Schema: Dictionary with JSON schema specification. Must include top-level title and description keys. Returns dict(字典).
-- Union types: Multiple schema options. The model will choose the most appropriate schema based on the context.
+- Pydantic models: 带field验证的BaseModel子类。返回已验证的Pydantic实例.
+- Dataclasses: 带有类型注释的Python数据类。返回字典.
+- TypedDict: 带类型的字典类。返回字典.
+- JSON Schema: 具有JSON模式规范的字典。必须包含顶级标题和描述码。返回字典.
+- Union types: 多种模式选项。模型将根据上下文选择最合适的模式.
+
+`tool_message_content`
 
 生成结构化输出时返回的tool message的自定义内容。 如果未提供，则默认显示一条显示结构化响应数据的message。
 
+`handle_errors`
+
 结构化输出验证失败的错误处理策略。默认为True。
 
-- True: Catch all errors with default error template
-- str: Catch all errors with this custom message
-- type[Exception]: Only catch this exception type with default message
-- tuple[type[Exception], ...]: Only catch these exception types with default message
-- Callable[[Exception], str]: Custom function that returns error message
-- False: No retry, let exceptions propagate
+- True: 使用默认错误模板捕获所有错误
+- str: 使用此自定义消息捕获所有错误
+- type[Exception]: 仅用默认消息捕获此异常类型
+- tuple[type[Exception], ...]: 仅用默认消息捕获这些异常类型
+- Callable[[Exception], str]: 返回错误消息的自定义函数
+- False: 不重试，让异常传播
 
 
 ```js
@@ -177,7 +210,8 @@ result["structured_response"]
 # {'rating': 5, 'sentiment': 'positive', 'key_points': ['fast shipping', 'expensive']}
 ```
 
-### Custom tool message content
+
+### 自定义工具消息内容
 
 tool_message_content参数允许你自定义生成结构化输出时出现在对话历史记录中的message：
 
@@ -228,7 +262,9 @@ Action item captured and added to meeting notes!
 Name: MeetingAction
 Returning structured response: {'task': 'update the project timeline', 'assignee': 'Sarah', 'priority': 'high'}
 ```
-### Error handling
+
+
+### 错误处理
 
 模型在通过工具调用生成结构化输出时可能会出错。 LangChain提供智能重试机制来自动处理这些错误。
 
@@ -297,7 +333,7 @@ Name: ContactInfo
 Returning structured response: {'name': 'John Doe', 'email': 'john@email.com'}
 ```
 
-#### Schema validation error
+#### Schema验证错误
 
 当结构化输出与预期模式不匹配时，agent会提供特定的错误反馈：
 
@@ -349,7 +385,7 @@ Name: ProductRating
 Returning structured response: {'rating': 5, 'comment': 'Amazing product'}
 ```
 
-#### Error handling strategies
+#### 错误处理策略
 
 你可以使用handle_errors参数自定义错误的处理方式：
 
@@ -439,9 +475,25 @@ response_format = ToolStrategy(
 )
 ```
 
+### 模型refusal
+当模型拒绝时，它不会返回结构化输出。使用ProviderStrategy，agent会引发StructuredOutputValidationError。
+使用ToolStrategy，agent在没有结构化响应的情况下结束。要为任一策略引发ModelRefusedError，请添加ModelRefusedMiddleware：
+```python
+from langchain.agents import create_agent
+from langchain.agents.middleware import ModelRefusalMiddleware
+
+agent = create_agent(
+    model="claude-sonnet-5-5",
+    response_format=ProductRating,
+    middleware=[ModelRefusalMiddleware()],
+)
+```
+模型拒绝中间件要求langchain>=1.4.9。请参阅处理拒绝以获取回应方式。
+
+
 ## Handle parsing errors in chains
 
-上述策略，包括handle_errors重试，适用于使用create_agent创建的agent。 由管道运算符（例如，prompt|model|parser）组成的chains没有内置的输出解析失败重试机制。 
+上述策略，包括handle_errors重试，适用于使用create_agent创建的agent。 由管道运算符(例如，prompt|model|parser)组成的chains**没有内置的输出解析失败重试机制**。 
 要处理chain中格式错误的模型输出，请使用以下方法之一：
 
 - Model-level structured output: 即模型级别的结构化输出；使用with_structured_output将schema绑定到模型。 当提供程序支持原生结构化输出时，它会强制执行schema
@@ -449,7 +501,11 @@ response_format = ToolStrategy(
 - Fix malformed output with a model: 即修复模型输出格式错误的问题; 将输出解析封装在langchain classic的OutputFixingParser中。 在解析失败时，
 包装器将格式错误的输出、解析器的格式指令和错误消息发送到模型，并解析纠正后的响应。
 
+:::info
+<small>
 OutputFixingParser需要langchain经典包。 在v1之前，它以langchain.output_passers.OutputFixingParser的形式提供。
+</small>
+:::
 
 ```js
 from langchain.chat_models import init_chat_model
@@ -491,4 +547,9 @@ OutputFixingParser发送格式错误的完成、解析器的格式指令和错�
 它是通过其parse_with_prompt（completion，prompt_value）方法而不是parse调用的，因此它不能直接作为chain的最后一步进行管道传输。
 
 
+
+## 返回错误该怎么处理
+重试是基本逻辑，除了模型有自带的重试策略外，还可以自己处理；
+有的属于是定义条件不清楚、逻辑冲突、格式验证冲突等， 模型有可能选择相对合理的回答正常处理， 当然这种也可以使用handle_errors自己定义错误消息；
+也可以不处理，在外层try catch处理，或者使用错误处理中间件处理，后面的处理完全可控，结束循环或者自己定义一个message让循环继续都行！！！
 

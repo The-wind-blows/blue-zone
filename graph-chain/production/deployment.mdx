@@ -2,4 +2,85 @@
 sidebar_position: 1
 ---
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
 # 部署
+
+当你准备将LangChain agent部署到生产环境时，请选择适合您堆栈的托管模型。LangSmith Cloud为具有持久状态和后台执行的有状态、长时间运行的agent提供了完全托管的基础设施。
+
+:::tip
+<small>
+LangSmith提供了云之外的多种部署选项，包括混合、独立服务器和带控制平面的自托管。有关更多信息，请参阅LangSmith agent服务器概述。
+</small>
+:::
+
+## LangSmith Cloud
+
+本节将介绍如何从GitHub存储库将agent部署到LangSmith Cloud。LangSmith负责处理基础设施、扩展和运营问题。
+### 先决条件
+在开始之前，请确保您拥有以下内容：
+- GitHub帐户
+- LangSmith帐户(免费注册)
+
+### 部署你的agent
+
+1. 在GitHub上创建存储库
+
+应用程序的代码必须驻留在GitHub存储库中，才能部署在LangSmith上。支持公共和私有存储库。
+对于此快速入门，首先请按照本地服务器设置指南确保你的应用程序与LangGraph兼容。然后，将代码推送到存储库。
+
+2. 部署到LangSmith
+
+- 导航到agent服务器: 登录LangSmith。在左侧边栏中，选择agent服务器。
+- 创建agent服务器: 单击+agent服务器按钮。将打开一个窗格，你可以在其中填写必填字段。
+- 链接存储库: 如果你是第一次使用或添加以前未连接的私有存储库，请单击“添加新帐户”按钮，然后按照说明连接你的GitHub帐户。
+- 部署仓库： 选择应用程序的存储库。单击Submit进行部署。这可能需要大约15分钟才能完成。你可以在aghent服务器详细信息视图中查看状态。
+
+3.在Studio中测试你的应用程序
+
+部署应用程序后：
+- 选择你刚才创建的agent服务器以查看更多详细信息。
+- 单击右上角的Studio按钮。Studio将打开以显示你的图形。
+
+4.获取agent服务器的API URL
+
+在LangSmith的agent服务器详细信息视图中，找到URL行。单击复制agent服务器URL将地址复制到剪贴板。
+
+5. 测试API
+
+你现在可以测试API：
+<Tabs>
+  <TabItem value="pip" label="pip" default>
+    ```python
+    pip install -U langgraph-sdk
+    ```
+  </TabItem>
+  <TabItem value="Rest API" label="Rest API">
+    ```python
+    curl -s --request POST \
+        --url <DEPLOYMENT_URL>/runs/stream \
+        --header 'Content-Type: application/json' \
+        --header "X-Api-Key: <LANGSMITH API KEY> \
+        --data "{
+            \"assistant_id\": \"agent\", `# Name of agent. Defined in langgraph.json.`
+            \"input\": {
+                \"messages\": [
+                    {
+                       \"role\": \"human\",
+                        \"content\": \"What is LangGraph?\"
+                    }
+                ]
+            },
+            \"stream_mode\": \"updates\"
+        }"
+    ```
+  </TabItem>
+</Tabs>
+
+
+:::tip
+<small>
+LangSmith提供了其他托管选项，包括自托管和混合托管。有关更多信息，请参阅平台设置概述。
+</small>
+:::
