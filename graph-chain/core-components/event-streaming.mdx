@@ -47,10 +47,10 @@ final_state = stream.output
 | stream.extensions    | Custom transformer projections  |
 | stream.tool_calls    | Tool execution lifecycle, inputs, output deltas, final output, and errors. |
 
-stream.messages生成ChatModelStream对象。每个消息流都公开.text、.rreasong、.tool_calls和.output。同步投影可以迭代获取实时增量，
-也可以排空以获取最终值：对于最终文本使用str（message.text），对于最终的工具调用使用message.tool_calls.get（）。
+stream.messages生成ChatModelStream对象。每个消息流都公开.text、.reasoning、.tool_calls和.output。同步投影可以迭代获取实时增量，
+也可以排空以获取最终值：对于最终文本使用str(message.text)，对于最终的工具调用使用message.tool_calls.get()。
 
-## agent messages
+## agent消息
 当你希望每次LLM调用都获取模型输出时，请使用stream.messages。
 
 ```js
@@ -85,7 +85,7 @@ for message in stream.messages:
         print(delta, end="", flush=True)
 ```
 
-## tool调用
+## 工具调用
 
 有两种有用的tool调用投影：
 
@@ -113,13 +113,21 @@ for call in stream.tool_calls:
 message.tool_calls中的每个块都是一个tool_call_chunk，它包含调用的id、名称，并且只包含其参数的新部分。
 调用的块连接成完整的参数，message.tool_calls.get()返回解析后的工具调用。
 
+:::info
+<small>
+只包含参数新部分的块需要langchain core>=1.6.13。在早期版本中，每个块都包含到目前为止的所有参数。
+</small>
+:::
+
+
+
 ## Streaming sub-agents
 
 当create_agent调用调用另一个名为create_agent的调用时（通常通过包装工具），内部agent的事件会在嵌套的命名空间中流动。
 传递给create_agent的 `name=` 可以识别stream中的内部agent，因此你可以对每个agent进行过滤和标记。
 
 命名的sub-agent在`stream.subagents`中显示。每个处理都公开了inner-agent自己的.messages、.values、.tool_calls和.output，以及.name(你传递的`name=`)
-和.cause(sub-agent的tool calling)。 因为这里只显示了命名的`create_agent`运行，所以您不需要过滤掉普通的subgraph。
+和.cause(sub-agent的tool calling)。 因为这里只显示了命名的`create_agent`运行，所以你不需要过滤掉普通的subgraph。
 
 ```js
 from langchain.agents import create_agent
@@ -161,6 +169,8 @@ for subagent in stream.subagents:
 从工具调用的普通`StateGraph`子图也会出现在`stream.subgraphs`上——在`.compile(name=…)`设置 `name=` 以获取subgent.graph_name中的标签。
 
 `stream.sbagents`是命名的createagent的sub-agent的焦点视图，而`stream.sbgraphs`覆盖了每个内嵌的graph。使用与你的UI匹配的任何一个。
+
+
 
 ## 状态和最终输出
 
@@ -231,6 +241,13 @@ for activity in stream.extensions["tool_activity"]:
 
 ### 在中间件上注册transformer
 
+
+:::info
+<small>
+中间件注册的transformer需要langchain>=1.3.2。
+</small>
+:::
+
 中间件可以在其hooks和tools旁边声明stream transformer factories。不同语言有不同的 factory shape：
 
 将`AgentMiddleware`子类上的transformers属性设置为factories sequence。每个factory都有Callable[[tuple[str, ...]], StreamTransformer],
@@ -261,8 +278,22 @@ agent = create_agent(
 内置PIIMiddleware使用此钩子从流式传输的线输出中编辑PII。 当apply_to_output=True时，其注册的transformer会在文本增量、工具调用参数、
 工具输出和状态快照离开运行之前从它们中清除检测到的PII，从而关闭窗口，否则after_model状态级编辑会让原始PII通过stream_events的实时阅读器（版本=“v3”）。
 
+```python
+from langchain.agents import create_agent
+from langchain.agents.middleware import PIIMiddleware
+
+agent = create_agent(
+    model="gpt-5-nano",
+    tools=[],
+    middleware=[
+        PIIMiddleware("email", strategy="redact", apply_to_output=True),
+    ],
+)
+```
+
 有关完整的配置界面，请参阅PII检测。
 See Build your own projection for the transformer contract
+
 
 ## 相关
 
