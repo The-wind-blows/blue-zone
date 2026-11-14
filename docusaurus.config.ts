@@ -78,6 +78,15 @@ const config: Config = {
         sidebarPath: './sidebars.ts'//require.resolve('./sidebars/api.ts'),
       },
     ],
+    [
+      '@docusaurus/plugin-content-docs',
+      {
+        id: 'graph-lang',
+        path: 'graph-lang', //文档目录
+        routeBasePath: 'graph-lang', //路由前缀
+        sidebarPath: './sidebars.ts'//require.resolve('./sidebars/api.ts'),
+      },
+    ],
   ],
 
   themeConfig: {
@@ -107,9 +116,17 @@ const config: Config = {
         },
         {
           type: 'doc', 
-          label: 'graph-chain',        //顶部导航栏的名字
+          label: 'LangChain',        //顶部导航栏的名字
           position: 'left',            //从左到右排列
           docsPluginId: 'graph-chain',  //就是前面plugins里的id,
+          docId: 'intro',                //  好像就是默认匹配的那个文档
+          //sidebarId: 'graphSidebar',   //这个就是sideBar里面配置的sidebar， 因为这里的类型是doc， 不用再配置侧边栏
+        },
+        {
+          type: 'doc', 
+          label: 'LangGraph',        //顶部导航栏的名字
+          position: 'left',            //从左到右排列
+          docsPluginId: 'graph-lang',  //就是前面plugins里的id,
           docId: 'intro',                //  好像就是默认匹配的那个文档
           //sidebarId: 'graphSidebar',   //这个就是sideBar里面配置的sidebar， 因为这里的类型是doc， 不用再配置侧边栏
         },

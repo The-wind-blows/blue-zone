@@ -1,0 +1,138 @@
+---
+sidebar_position: 1
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# 快速入门
+
+这个快速入门演示了如何使用LangGraph Graph API构建calculator agent。
+
+已经有一个agent并想部署它？请参阅LangSmith agent服务器。
+
+:::tip[使用AI编程助手?]
+<small>
+- 安装<a href='https://api-docs.deepseek.com/zh-cn/'>LangChain Docs MCP servers</a>，让你的agent访问最新的LangChain文档和示例。
+- 安装<a href='https://api-docs.deepseek.com/zh-cn/'>LangChain skills</a>，以提高你的agent在LangChain生态系统任务上的性能。
+</small>
+:::
+
+## 先决条件
+在开始之前，请确保你拥有来自模型提供商(例如Gemini、Anthropic、OpenAI)的API密钥。请参阅所有可用提供商的聊天模式集成。
+
+如果你使用LangSmith Gateway，你可以携带自己的提供商密钥或使用Gateway Credits访问没有提供商密钥的型号。
+
+## 设置
+安装langgraph、langchain、langchain-openai和langchain-deepseek:
+<Tabs>
+  <TabItem value="pip" label="pip" default>
+    ```python
+    pip install -U langgraph langchain langchain-openai langchain-deepseek
+    ```
+  </TabItem>
+  <TabItem value="uv" label="uv">
+    ```python
+    uv add langgraph langchain langchain-openai langchain-deepseek
+    ```
+  </TabItem>
+</Tabs>
+
+此示例使用deepseek。在shell或.env文件中设置API密钥：
+<Tabs>
+  <TabItem value="Shell" label="Shell" default>
+    ```python
+    export DEEPSEEK_API_KEY="your-api-key"
+    ```
+  </TabItem>
+  <TabItem value=".env" label=".env">
+    ```python
+    DEEPSEEK_API_KEY=your-api-key
+    ```
+  </TabItem>
+</Tabs>
+
+要使用其他提供商，请参阅聊天模型集成，并在接下来的步骤中调整模型初始化。
+
+## 构建agent
+模型可以调用工具，然后agent再次调用模型，直到它返回最终答案。
+
+创建一个文件。将每一步的代码添加到上一步的下方。
+
+有关概念信息，请参见Graph API概述。
+
+1.定义工具和模型
+
+此示例使用Claude Sonnet模型，并定义了加法、乘法和除法工具。
+
+为agent创建一个文件(agent.py或agent.ts)。添加以下内容：
+```python
+from langchain.tools import tool
+from langchain.chat_models import init_chat_model
+
+model = init_chat_model(
+    "claude-sonnet-4-6",
+    temperature=0
+)
+
+# Define tools
+@tool
+def multiply(a: int, b: int) -> int:
+    """Multiply `a` and `b`.
+
+    Args:
+        a: First int
+        b: Second int
+    """
+    return a * b
+
+@tool
+def add(a: int, b: int) -> int:
+    """Adds `a` and `b`.
+
+    Args:
+        a: First int
+        b: Second int
+    """
+    return a + b
+
+@tool
+def divide(a: int, b: int) -> float:
+    """Divide `a` and `b`.
+
+    Args:
+        a: First int
+        b: Second int
+    """
+    return a / b
+
+# Augment the LLM with tools
+tools = [add, multiply, divide]
+tools_by_name = {tool.name: tool for tool in tools}
+model_with_tools = model.bind_tools(tools)
+```
+2.定义状态
+
+该图的状态存储了消息和LLM调用的数量。
+
+在工具和模型下面添加以下内容：
+:::tip
+<small>
+LangGraph中的状态在agent的整个执行过程中持续存在。
+
+带operator.add的Annotated类型会将新消息附加到列表中，而不是替换它。
+</small>
+:::
+
+```python
+from langchain.messages import AnyMessage
+from typing_extensions import TypedDict, Annotated
+import operator
+
+class MessagesState(TypedDict):
+    messages: Annotated[list[AnyMessage], operator.add]
+    llm_calls: int
+```
+
+
+
