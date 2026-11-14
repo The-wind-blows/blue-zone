@@ -1,0 +1,61 @@
+---
+sidebar_position: 1
+slug: /graph-lang/overview
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+
+# 概览
+
+LangGraph是一个底层编排框架和运行时，用于长时间运行的有状态agent。你可以将工作流定义为共享状态、节点和边的图，并可以在同一图中将确定性步骤与LLM驱动的步骤混合使用。
+
+LangGraph专注于编排功能，如durable execution, streaming, and human-in-the-loop.。它没有规定提示词或agent架构。
+
+在开始之前，了解agent使用的构建块，特别是模型和工具。文档示例通常使用LangChain进行这些集成，但LangGraph不需要LangChain。
+
+如果你想先创建一个更高级别的agent循环，请使用Deep Agents或LangChain agent。当你需要对状态和控制流进行显式控制时，请使用LangGraph。
+
+**本教程为官方教程翻译而来，但示例主要使用deepseek、openai, 国内deepseek是最佳平替，且完全兼容openai，推荐使用deekseep完成教程！！！**
+
+## 安装
+
+<Tabs>
+  <TabItem value="pip" label="pip" default>
+    ```python
+    pip install -U langgraph
+    ```
+  </TabItem>
+  <TabItem value="uv" label="uv">
+    ```python
+    uv add langgraph
+    ```
+  </TabItem>
+</Tabs>
+
+创建一个最小图：
+```python
+from langgraph.graph import StateGraph, MessagesState, START, END
+
+def mock_llm(state: MessagesState):
+    return {"messages": [{"role": "ai", "content": "hello world"}]}
+
+graph = StateGraph(MessagesState)
+graph.add_node(mock_llm)
+graph.add_edge(START, "mock_llm")
+graph.add_edge("mock_llm", END)
+graph = graph.compile()
+
+graph.invoke({"messages": [{"role": "user", "content": "hi!"}]})
+```
+
+有关完整的agent，请参阅LangGraph快速入门。
+
+## 能力
+LangGraph为有状态、长时间运行的工作流提供了运行时原语。它不会抽象提示词或强制固定agent架构。
+- Deterministic and agentic steps：将手动编码的节点与模型驱动的节点组合在一个图中。
+- Persistence：Checkpoint state，并在失败或暂停后恢复。
+- Human-in-the-loop：暂停执行，检查或编辑状态，然后继续。
+- Memory: 会话中的短期线程状态和长期记忆。
+- Streaming：在图运行时流式传输token、状态更新和其他事件。
