@@ -7,18 +7,83 @@ import TabItem from '@theme/TabItem';
 
 # 持久化
 
-要安装LangChain软件包，请执行以下操作：
-<Tabs>
-  <TabItem value="pip" label="pip" default>
-    ```python
-    pip install -U langchain
-    # Requires Python 3.10+
-    ```
-  </TabItem>
-  <TabItem value="uv" label="uv">
-    ```python
-    uv add langchain
-    # Requires Python 3.10+
-    ```
-  </TabItem>
-</Tabs>
+持久化允许LangGraph应用程序在运行单个图之外保留有用信息。当agent需要继续对话、在中断后恢复、从故障中恢复或在交互中记住信息时，这很重要。
+
+LangGraph提供了两个互补的持久化系统：
+- Checkpointers将线程的图形状态作为检查点持久化。将它们用于短期、线程范围的记忆，包括对话连续性、human-in-the-loop工作流、时间旅行和容错。
+- Stores将应用程序定义的数据持久化到图形状态之外。将它们用于长期、跨线程的记忆，包括用户偏好、事实和共享知识。
+
+大多数应用程序都可以使用这两种方式：checkpointer跟踪当前线程，store跨线程跟踪持久信息。
+
+## 快速入门
+使用checkpointer, store, 或两者编译你的图：
+```python
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.memory import InMemoryStore
+
+checkpointer = InMemorySaver()
+store = InMemoryStore()
+
+graph = builder.compile(checkpointer=checkpointer, store=store)
+
+result = graph.invoke(
+    {"messages": [{"role": "user", "content": "Hi, my name is Bob."}]},
+    {"configurable": {"thread_id": "thread-1"}},
+)
+```
+
+:::info
+<small>
+使用agent服务器时agent服务器自动处理持久化，你不需要手动实现或配置checkpointers或stores。服务器在幕后处理持久化基础设施。
+</small>
+:::
+
+## Checkpointer vs. store
+
+|  | Checkpointer | Store  |
+|---|---|---|
+| Persists    | graph状态快照   |  应用程序定义的键值数据 |
+| Scope       | 单线程          |  跨线程                |
+| Memory type | 短期线程范围记忆 |  长期跨线程记忆         |
+| Use for     | 对话连续性、human-in-the-loop、时间旅行和容错 | 用户偏好、事实和共享知识  |
+| Access pattern | 在图配置中传递thread_id |  从节点或应用程序代码中读写items   |
+| Full guide     | <a href='/graph-lang/capablities/checkpointers'>Checkpointers</a>  | <a href='/graph-lang/capablities/stores'>Stores</a> |
+
+## 常见问题排查
+
+### PostgresSaver: thread_id太长
+当使用PostgresSaver(或AsyncPostgresSavel)时，thread_id存储在长度有限的列中。如果thread_id超过列大小，你将看到数据库错误。
+
+修复：将thread_id值保持在255个字符以下。如果需要确定性ID，请使用UUID或hash：
+```python
+from langchain_core.utils.uuid import uuid7
+config = {"configurable": {"thread_id": str(uuid7())[:255]}}
+```
+
+### MemorySaver重启不持久化
+MemorySaver和InMemorySaver将checkpoints存储在RAM中。当进程重新启动时，所有checkpoints都会丢失。
+
+修复：在生产环境中使用持久checkpoints：
+- PostgresSaver：支持异步的PostgreSQL
+- SqliteSaver：用于开发的基于本地文件的存储
+
+### checkpoints无限增长
+在长时间的交谈中，checkpoints不断累积。这可能会增加延迟和存储成本。
+
+修复：定期修剪旧checkpoints或设置保留策略：
+```python
+from langgraph.checkpoint.postgres import PostgresSaver
+
+checkpointer = PostgresSaver.from_conn_string("postgresql://...")
+checkpointer.setup()  # Creates tables with indexes
+# Consider adding a cron job to delete checkpoints older than N days
+```
+
+### 从父图到子图的状态访问
+当子图更新状态时，父图可能无法立即看到这些变化。这是因为每个子图管理着自己的checkpoint命名空间。
+
+修复：对于需要跨图边界传递的数据，请通过Store使用共享状态，或配置子图写入父级checkpoint。
+
+## 下一步行动
+- 使用<a href='/graph-lang/capablities/checkpointers'>Checkpointers</a>来持久化和检查线程状态。
+- 使用<a href='/graph-lang/capablities/stores'>Stores</a>跨线程持久化数据。
