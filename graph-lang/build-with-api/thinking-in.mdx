@@ -1,0 +1,43 @@
+---
+sidebar_position: 1
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Graph API中的思考
+使用Graph API构建agent时，可以将流程分解为称为节点的离散步骤。然后描述每个节点的决策和转换。最后，你通过每个节点都可以读取和写入的共享状态连接节点。
+
+本演练使用Graph API构建客户支持电子邮件agent。
+
+## 从你想要自动化流程开始
+想象一下，你需要构建一个处理客户支持电子邮件的人工智能agent。你的产品团队为你提供了以下要求：
+```python
+The agent should:
+
+- Read incoming customer emails
+- Classify them by urgency and topic
+- Search relevant documentation to answer questions
+- Draft appropriate responses
+- Escalate complex issues to human agents
+
+Example scenarios to handle:
+
+1. Simple product question: "How do I reset my password?"
+2. Bug report: "The export feature crashes when I select PDF format"
+3. Urgent billing issue: "I was charged twice for my subscription!"
+4. Feature request: "Can you add dark mode to the mobile app?"
+5. Complex technical issue: "Our API integration fails intermittently with 504 errors"
+```
+
+要使用Graph API实现agent，本指南将向你展示五个步骤。第一步和第二步是规划。步骤3到5将该计划转换为状态、节点和可以运行的编译图。
+
+
+
+
+:::tip[使用AI编程助手?]
+<small>
+- 安装<a href='https://api-docs.deepseek.com/zh-cn/'>LangChain Docs MCP servers</a>，让你的agent访问最新的LangChain文档和示例。
+- 安装<a href='https://api-docs.deepseek.com/zh-cn/'>LangChain skills</a>，以提高你的agent在LangChain生态系统任务上的性能。
+</small>
+:::
