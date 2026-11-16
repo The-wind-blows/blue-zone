@@ -312,18 +312,484 @@ DeltaChannel要求langgraph>=1.2，目前处于beta(测试阶段)。API可能会
 :::
 
 
-要安装LangChain软件包，请执行以下操作：
-<Tabs>
-  <TabItem value="pip" label="pip" default>
-    ```python
-    pip install -U langchain
-    # Requires Python 3.10+
-    ```
-  </TabItem>
-  <TabItem value="uv" label="uv">
-    ```python
-    uv add langchain
-    # Requires Python 3.10+
-    ```
-  </TabItem>
-</Tabs>
+## Checkpointer库
+在幕后，checkpoint是由符合BaseCheckpointSaver接口的checkpointer对象驱动的。LangGraph提供了几个checkpointer实现，所有这些实现都是通过独立的、可安装的库实现的。这里推荐`langgraph-checkpoint-postgres`.
+
+:::info
+<small>
+请参阅可用提供程序的checkpointer集成。
+</small>
+:::
+
+- langgraph-checkpoint：checkpointer存储基础接口(BaseCheckpointSaver)和序列化/反序列化接口(SerializerProtocol)。包括用于实验的内存中checkpointer实现(InMemorySaver)。LangGraph附带了LangGraph checkpoint。
+- langgraph-checkpoint-sqlite：使用sqlite数据库的langgraph checkpointer的实现(SqliteSaver/AsyncSqliteSaver)。非常适合实验和本地工作流程。需要单独安装。
+- langgraph-checkpoint-postgres：一个使用postgres数据库(PostgresSaver/AsyncPostgresSaver)的高级checkpointer，用于LangSmith。非常适合在生产中使用。需要单独安装。
+- langgraph-checkpoint-mongodb：一个使用mongodb的高级checkpoint(MongoDBSaver/AsyncMongoDBSaver)。非常适合在生产中使用。需要单独安装。
+- langchain-azure-cosmossdb：LangGraph checkpointer的一种实现，它使用NoSQL数据库azure Cosmos DB(CosmosDBSaverSync/CosmosDBSaver)。非常适合在Azure的生产环境中使用。
+  支持同步和异步操作，使用Microsoft Entra ID身份验证。需要单独安装。
+
+### Checkpointer接口
+每个checkpointer都符合BaseCheckpointSaver接口，并实现了以下方法：
+- .put-存储checkpoint及其配置和元数据。
+- .put_writes-存储链接到checkpoint的中间写入(即 pending writes)。
+- .get_tuple-使用给定的配置(thread_id和checkpoint_id)获取checkpoint元组。这用于在graph.get_state()中填充StateSnapshot。
+- .list-列出与给定配置和筛选条件匹配的checkpoints。这用于填充graph.get_state_history()中的状态历史。传递config=None以列出每个线程的checkpoint。请参阅列出每个线程。
+
+如果checkpoint用于异步图执行(即通过.ainvoke、.astream、.abatch执行图)，则将使用上述方法的异步版本(.aput、.aput_writes、.aget_tuple、.list)。
+
+:::info
+<small>
+为了异步运行图，你可以使用InMemorySaver，或异步版本的Sqlite/Postgres checkpointer——AsyncSqliteSaver/AsyncPostgresSaver checkpointer。
+</small>
+:::
+
+### 序列化器
+当checkpointer保存图状态时，它们需要序列化状态中的通道值。这是使用序列化器对象完成的。
+
+`langgraph_checkpoint`定义了实现序列化器的协议。它提供了一个默认实现(`JsonPlusSerializer`)，可以处理各种类型，包括LangChain和langgraph原语、日期时间、枚举等。
+
+#### 使用pickle进行序列化
+默认的序列化器`JsonPlusSerializer`在底层使用ormsgpack和JSON，这并不适用于所有类型的对象。
+
+如果你想为msgpack编码器当前不支持的对象(如Pandas数据帧)回退到pickle，你可以使用`JsonPlusSerializer`的pickle_fallback参数：
+```python
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+# ... Define the graph ...
+graph.compile(
+    checkpointer=InMemorySaver(serde=JsonPlusSerializer(pickle_fallback=True))
+)
+```
+#### 加密
+checkpointers可以选择加密所有持久状态。要启用此功能，请将`EncryptedSerialier`的实例传递给任何`BaseCheckpointSaver`实现的`serde`参数。创建加密序列化器的最简单方法是通过`from_pycryptodome_aes`，
+它从`LANGRAPH_aes_key`环境变量读取aes密钥(或接受密钥参数)：
+```python
+import sqlite3
+
+from langgraph.checkpoint.serde.encrypted import EncryptedSerializer
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+serde = EncryptedSerializer.from_pycryptodome_aes()  # reads LANGGRAPH_AES_KEY
+checkpointer = SqliteSaver(sqlite3.connect("checkpoint.db"), serde=serde)
+```
+```python
+from langgraph.checkpoint.serde.encrypted import EncryptedSerializer
+from langgraph.checkpoint.postgres import PostgresSaver
+
+serde = EncryptedSerializer.from_pycryptodome_aes()
+checkpointer = PostgresSaver.from_conn_string("postgresql://...", serde=serde)
+checkpointer.setup()
+```
+
+在LangSmith上运行时，只要存在`LANGRAPH_AES_KEY`，加密就会自动启用，因此你只需要提供环境变量。通过实现`CipherProtocol`并将其提供给`EncryptedSerialier`，可以使用其他加密方案。
+
+## 构建自定义checkpointer
+
+:::tip
+<small>
+使用一致性测试套件在构建时验证你的实现。它涵盖了所有五种基本方法和扩展功能，包括增量通道。发货前在CI中运行它。
+</small>
+:::
+
+本节介绍为自定义存储后端从头开始实现BaseCheckpointSaver。如果你已经有一个可用的checkpointer，只需要添加增量通道支持，请跳到增量通道支持。
+
+### 概述
+LangGraph的持久层建立在两个存储抽象之上：
+- Checkpoints表——每个超级步骤一行；存储序列化的图状态(channel_values、channel_versions、versionsseed)并链接到其父checkpoint。
+- 写入表——在一个超级步骤中，每个节点输出一行；存储链接到checkpoint的(task_id、channel、value)元组。
+
+你的checkpointer管理这两个表。put写入检查点行；put_writes写入节点输出行；get_tuple将两者都读回CheckpointTuple
+
+### 基础合同
+子类`BaseCheckpointSaver`并实现这五个方法。所有这些都是必需的——缺少基方法会在运行时引发NotImplementedError。
+```python
+from collections.abc import AsyncIterator, Iterator, Sequence
+from typing import Any
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import (
+    BaseCheckpointSaver,
+    ChannelVersions,
+    Checkpoint,
+    CheckpointMetadata,
+    CheckpointTuple,
+)
+
+class MyCheckpointer(BaseCheckpointSaver):
+    async def aput(
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        ...
+
+    async def aput_writes(
+        self,
+        config: RunnableConfig,
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        ...
+
+    async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
+        ...
+
+    async def alist(
+        self,
+        config: RunnableConfig | None,
+        *,
+        filter: dict[str, Any] | None = None,
+        before: RunnableConfig | None = None,
+        limit: int | None = None,
+    ) -> AsyncIterator[CheckpointTuple]:
+        ...
+        yield  # make this an async generator
+
+    async def adelete_thread(self, thread_id: str) -> None:
+        ...
+```
+
+#### put/aput
+存储一个checkpoint行。使用存储的checkpoint_id返回更新的配置。
+关键要求：
+- 使用`self.serde.dumps_typed(checkpoint)`序列化checkpoint——这将处理所有LangGraph原生类型，包括增量通道使用的`_DeltaSnapshot blob`。
+- 完整存储元数据——不要删除未知密钥。LangGraph在minor版本中添加了新的元数据字段(例如增量通道的counter_since_delta_snapshot)；默默地丢弃它们会破坏特征。
+- 将config[“configurable”].get(“checkpoint_id”)存储为checkpoint ID，以便`get_tuple`可以填充`parent_config`。
+
+```python
+async def aput(self, config, checkpoint, metadata, new_versions):
+    thread_id = config["configurable"]["thread_id"]
+    checkpoint_ns = config["configurable"]["checkpoint_ns"]
+    checkpoint_id = checkpoint["id"]
+    parent_id = config["configurable"].get("checkpoint_id")
+
+    type_, blob = self.serde.dumps_typed(checkpoint)
+    serialized_metadata = self.serde.dumps_typed(metadata)
+
+    await self.db.execute(
+        "INSERT INTO checkpoints (...) VALUES (...)",
+        thread_id, checkpoint_ns, checkpoint_id, parent_id,
+        type_, blob, *serialized_metadata,
+    )
+    return {
+        "configurable": {
+            "thread_id": thread_id,
+            "checkpoint_ns": checkpoint_ns,
+            "checkpoint_id": checkpoint_id,
+        }
+    }
+```
+
+#### put_writes/aput_writes
+在当前超级步骤中存储单个任务的节点输出行。这些行通过(thread_id，checkpoint_ns，checkpoint_id)链接到checkpoint。
+```python
+async def aput_writes(self, config, writes, task_id, task_path=""):
+    thread_id = config["configurable"]["thread_id"]
+    checkpoint_ns = config["configurable"]["checkpoint_ns"]
+    checkpoint_id = config["configurable"]["checkpoint_id"]
+
+    rows = []
+    for idx, (channel, value) in enumerate(writes):
+        type_, blob = self.serde.dumps_typed(value)
+        final_idx = WRITES_IDX_MAP.get(channel, idx)
+        rows.append((thread_id, checkpoint_ns, checkpoint_id,
+                      task_id, task_path, final_idx, channel, type_, blob))
+
+    await self.db.executemany("INSERT INTO writes (...) VALUES (...)", rows)
+```
+从`langgraph.checkpoint.base`导入`WRITES_IDX_MAP`。它将特殊通道(__error_、__interrupt_等)映射到保留的负索引，这样它们就不会与常规写入索引冲突。
+
+#### get_tuple/aget_tuple
+检索checkpoint。配置可能包含：
+- 没有checkpoint_id--返回线程+命名空间的最新checkpoint。
+- 一个特定的checkpoint_id——返回该确切的checkpoint。
+
+两条路径都必须正常工作。特定的id路径用于时间旅行，关键是用于每次图调用时的增量通道状态重建(请参阅增量通道支持)。断开的特定id查找会默默地破坏增量通道状态。
+```python
+async def aget_tuple(self, config):
+    thread_id = config["configurable"]["thread_id"]
+    checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
+    checkpoint_id = config["configurable"].get("checkpoint_id")
+
+    if checkpoint_id:
+        row = await self.db.fetchone(
+            "SELECT * FROM checkpoints "
+            "WHERE thread_id=? AND checkpoint_ns=? AND checkpoint_id=?",
+            thread_id, checkpoint_ns, checkpoint_id,
+        )
+    else:
+        row = await self.db.fetchone(
+            "SELECT * FROM checkpoints "
+            "WHERE thread_id=? AND checkpoint_ns=? "
+            "ORDER BY checkpoint_id DESC LIMIT 1",
+            thread_id, checkpoint_ns,
+        )
+
+    if row is None:
+        return None
+
+    writes = await self.db.fetchall(
+        "SELECT task_id, channel, type, value FROM writes "
+        "WHERE thread_id=? AND checkpoint_ns=? AND checkpoint_id=? "
+        "ORDER BY task_id, idx",
+        thread_id, checkpoint_ns, row["checkpoint_id"],
+    )
+    pending_writes = [
+        (w["task_id"], w["channel"], self.serde.loads_typed((w["type"], w["value"])))
+        for w in writes
+    ]
+
+    checkpoint = self.serde.loads_typed((row["type"], row["blob"]))
+    metadata = self.serde.loads_typed((row["metadata_type"], row["metadata"]))
+
+    parent_config = None
+    if row["parent_checkpoint_id"]:
+        parent_config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "checkpoint_ns": checkpoint_ns,
+                "checkpoint_id": row["parent_checkpoint_id"],
+            }
+        }
+
+    return CheckpointTuple(
+        config={
+            "configurable": {
+                "thread_id": thread_id,
+                "checkpoint_ns": checkpoint_ns,
+                "checkpoint_id": row["checkpoint_id"],
+            }
+        },
+        checkpoint=checkpoint,
+        metadata=metadata,
+        parent_config=parent_config,
+        pending_writes=pending_writes,
+    )
+```
+
+:::warning
+<small>
+行键/索引设计对特定的id查找很重要。如果你的存储使用不嵌入checkpoint_id的时间顺序键(例如，反向时间戳)，则无法按id进行直接行读取。你必须在行键中编码checkpoint_id，或构建辅助索引。
+在每次查找时使用值过滤器进行扫描是有效的，但不会缩放。
+</small>
+:::
+
+#### list/alist
+返回线程的checkpoint，最新的优先。尊重`before`(只返回比该配置的checkpoint_id旧的checkpoint)和`limit`
+
+#### delete_thread/adelete_thread
+删除线程的所有checkpoints和写入。必须删除checkpoint行和写入行
+
+### 行key/index设计
+如何存储和索引checkpoint直接影响正确性和性能。
+
+推荐schema(SQL)：
+```python
+CREATE TABLE checkpoints (
+    thread_id          TEXT NOT NULL,
+    checkpoint_ns      TEXT NOT NULL DEFAULT '',
+    checkpoint_id      TEXT NOT NULL,   -- ULID, lexicographically sortable newest-last
+    parent_checkpoint_id TEXT,
+    type               TEXT,
+    checkpoint         BYTEA,
+    metadata           JSONB,
+    PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+);
+
+CREATE TABLE writes (
+    thread_id     TEXT NOT NULL,
+    checkpoint_ns TEXT NOT NULL DEFAULT '',
+    checkpoint_id TEXT NOT NULL,
+    task_id       TEXT NOT NULL,
+    task_path     TEXT NOT NULL DEFAULT '',
+    idx           INTEGER NOT NULL,
+    channel       TEXT NOT NULL,
+    type          TEXT,
+    value         BYTEA,
+    PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, task_path, idx)
+);
+```
+
+因为`checkpoint_id`是一个ULID，所以它按字典顺序排序——值越大，越新。“获取最新”是`ORDER BY checkpoint_id DESC LIMIT 1`；“get by id”是对主键的相等性查找。
+
+对于非SQL存储：同样的原则适用。无论你使用什么密钥方案，直接查找(thread_id，checkpoint_ns，checkpoint_id)必须是O(1)或接近它。避免按id查找checkpoint的唯一方法是扫描线程的所有行的设计。
+
+### 序列化
+checkpoint、写入和元数据始终使用`self.serde`(继承自BaseCheckpointSaver，默认为JsonPlusSerializer)。不要直接将pickle用于元数据——它确实有效，但JsonPlusSerializer可以产生人类可读的输出，并更好地处理版本控制。
+
+`JsonPlusSerializer`自动处理所有LangGraph原生类型：
+- _DeltaSnapshot——增量通道使用的哨兵blob(msgpack ext code 7)
+- Pydantic v2模型、数据类、numpy数组、日期时间、枚举等
+
+如果编写自定义序列化程序，请确保它可以从langgraph.checkpoint.serde.types往返_DeltaSnapshot。
+
+### 扩展功能
+这些方法是可选的，但可以解锁agent服务器的其他功能。如果你的存储后端能够有效地支持它们，请实施它们。
+|  Method | What it enables |
+|---|---|
+| adelete_for_runs | 回滚多任务策略  |
+| acopy_thread     | 高效的线程分叉  |
+| aprune           | 线程历史修剪  |
+| aget_delta_channel_history | 高效的delta信道状态重建(见下文) |
+
+agent服务器在启动时自动检测检查指针实现了哪些功能，并激活相应的功能。
+
+### Delta通道支持
+
+:::info
+<small>
+DeltaChannel处于测试阶段。当设计稳定时，API和磁盘上表示可能会发生变化。
+</small>
+:::
+
+DeltaChannel是一个reducer通道，它只在checkpoint blob中存储一个哨兵(MISSING)，而不是完整的通道值。状态是通过还原器重放祖先写入来重建的。
+这使得checkpoint斑点每一步为O(1)，而不是随着时间的推移累积的消息等通道的O(N)。
+
+#### 运行时需要什么
+当加载channel_values中缺少增量通道的checkpoint时，LangGraph调用`saver.get_delta_channel_history(config=config，channels=[…])`。对于每个通道，这将返回：
+- writes——所有对祖先链中该通道的写入，从最早的开始，直到最近的快照。
+- seed(可选)——存储在最近祖先处的_DeltaSnapshot blob，该祖先有一个；如果遍历到达根目录时没有找到快照，则不存在。
+
+然后，运行时调用channel.from_checkpoint(种子)和channel.replay_writes(写入)来重建实时值。
+
+#### 默认实现
+`BaseCheckpointSaver`提供了一个默认的`get_delta_channel_history`，它适用于任何正确的`get_tuple`实现：
+```python
+# Simplified from BaseCheckpointSaver
+def get_delta_channel_history(self, *, config, channels):
+    target = self.get_tuple(config)          # load the head checkpoint
+    cursor = target.parent_config            # walk from its parent
+    collected = {ch: [] for ch in channels}
+    seed = {}
+    remaining = set(channels)
+
+    while cursor and remaining:
+        tup = self.get_tuple(cursor)         # ← requires correct by-id lookup
+        if tup is None:
+            break
+        for write in reversed(tup.pending_writes or []):
+            if write[1] in remaining:
+                collected[write[1]].append(write)
+        for ch in list(remaining):
+            if ch in tup.checkpoint["channel_values"]:
+                seed[ch] = tup.checkpoint["channel_values"][ch]
+                remaining.discard(ch)
+        cursor = tup.parent_config
+
+    return {
+        ch: {"writes": list(reversed(collected[ch])), **({"seed": seed[ch]} if ch in seed else {})}
+        for ch in channels
+    }
+```
+
+**关键依赖关系**：get_tuple(cursor)总是使用特定的checkpoint_id(父节点的id)调用。如果该查找返回None，则行走将立即停止，每个增量通道都将重建为空，并且不会出现任何错误。这就是为什么`get_tuple`中的特定id路径必须正确。
+
+#### 性能覆盖
+
+默认的walk为每个祖先checkpoint发出一个get_tuple调用。对于具有良好查询支持的后端，重写`get_delta_channel_history`(及其异步双胞胎)以检索祖先链，并写入两个查询：
+```python
+async def aget_delta_channel_history(self, *, config, channels):
+    if not channels:
+        return {}
+
+    thread_id = config["configurable"]["thread_id"]
+    checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
+    checkpoint_id = config["configurable"]["checkpoint_id"]
+
+    # Stage 1: stream ancestors newest-first until every channel has a seed
+    ancestors = await self.db.fetchall(
+        "SELECT checkpoint_id, parent_checkpoint_id, type, checkpoint "
+        "FROM checkpoints "
+        "WHERE thread_id=? AND checkpoint_ns=? AND checkpoint_id < ? "
+        "ORDER BY checkpoint_id DESC",
+        thread_id, checkpoint_ns, checkpoint_id,
+    )
+
+    chain_by_ch: dict[str, list[str]] = {ch: [] for ch in channels}
+    seed_by_ch: dict[str, Any] = {}
+    remaining = set(channels)
+    cur_id = config["configurable"]["checkpoint_id"]
+
+    for row in ancestors:
+        if not remaining:
+            break
+        parent_id = row["parent_checkpoint_id"]
+        ckpt = self.serde.loads_typed((row["type"], row["checkpoint"]))
+        cv = ckpt.get("channel_values") or {}
+        for ch in list(remaining):
+            chain_by_ch[ch].append(row["checkpoint_id"])
+            if ch in cv:
+                seed_by_ch[ch] = cv[ch]
+                remaining.discard(ch)
+        cur_id = parent_id
+
+    # Stage 2: fetch writes for each channel's ancestor chain in one query
+    result: dict[str, DeltaChannelHistory] = {}
+    for ch in channels:
+        chain = chain_by_ch[ch]
+        if not chain:
+            entry: DeltaChannelHistory = {"writes": []}
+            if ch in seed_by_ch:
+                entry["seed"] = seed_by_ch[ch]
+            result[ch] = entry
+            continue
+
+        write_rows = await self.db.fetchall(
+            f"SELECT checkpoint_id, task_id, idx, type, value FROM writes "
+            f"WHERE thread_id=? AND checkpoint_ns=? AND channel=? "
+            f"AND checkpoint_id IN ({','.join('?' * len(chain))})"
+            f"ORDER BY checkpoint_id, task_id, idx",
+            thread_id, checkpoint_ns, ch, *chain,
+        )
+        writes_by_cid: dict[str, list[PendingWrite]] = {}
+        for row in write_rows:
+            cid = row["checkpoint_id"]
+            value = self.serde.loads_typed((row["type"], row["value"]))
+            writes_by_cid.setdefault(cid, []).append((row["task_id"], ch, value))
+
+        # chain is newest-first; iterate oldest-first to get correct replay order
+        collected: list[PendingWrite] = []
+        for cid in reversed(chain):
+            collected.extend(writes_by_cid.get(cid, []))
+
+        entry = {"writes": collected}
+        if ch in seed_by_ch:
+            entry["seed"] = seed_by_ch[ch]
+        result[ch] = entry
+
+    return result
+```
+
+#### delta通道修剪
+在实现copy_thread时，复制完整的祖先链，而不仅仅是头部checkpoint。对于每个增量通道，目标线程必须具有至少一个返回`_DeltaSnapshot`的写行，否则这些通道在复制后将重建为空。
+
+#### 使用一致性套件进行测试
+langgraph-checkpoint-conformance根据完整合约验证你的实现，包括增量通道历史：
+```python
+pip install langgraph-checkpoint-conformance
+```
+
+```python
+import asyncio
+from langgraph.checkpoint.conformance import checkpointer_test, validate
+
+@checkpointer_test(name="MyCheckpointer")
+async def my_checkpointer():
+    async with MyCheckpointer.create() as saver:
+        yield saver
+
+async def main():
+    report = await validate(my_checkpointer)
+    report.print_report()
+    # Fails the process if any base capability is missing or broken
+    if not report.passed_all_base():
+        raise RuntimeError("Checkpointer failed conformance suite")
+
+asyncio.run(main())
+```
+
+该套件会自动检测您的checkpointer实现了哪些扩展功能(包括`aget_delta_channel_history`)，并为每个功能运行相关测试。在发货前将其作为CI的一部分运行。
+
