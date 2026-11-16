@@ -10,8 +10,8 @@ import TabItem from '@theme/TabItem';
 持久化允许LangGraph应用程序在运行单个图之外保留有用信息。当agent需要继续对话、在中断后恢复、从故障中恢复或在交互中记住信息时，这很重要。
 
 LangGraph提供了两个互补的持久化系统：
-- Checkpointers将线程的图形状态作为检查点持久化。将它们用于短期、线程范围的记忆，包括对话连续性、human-in-the-loop工作流、时间旅行和容错。
-- Stores将应用程序定义的数据持久化到图形状态之外。将它们用于长期、跨线程的记忆，包括用户偏好、事实和共享知识。
+- Checkpointers将线程的图形状态持久化为checkpoints。将它们用于短期、线程范围的记忆，包括对话连续性、human-in-the-loop工作流、时间旅行和容错。
+- Stores将应用程序定义的数据持久化到图状态之外。将它们用于长期、跨线程的记忆，包括用户偏好、事实和共享知识。
 
 大多数应用程序都可以使用这两种方式：checkpointer跟踪当前线程，store跨线程跟踪持久信息。
 
@@ -63,7 +63,7 @@ config = {"configurable": {"thread_id": str(uuid7())[:255]}}
 ### MemorySaver重启不持久化
 MemorySaver和InMemorySaver将checkpoints存储在RAM中。当进程重新启动时，所有checkpoints都会丢失。
 
-修复：在生产环境中使用持久checkpoints：
+修复：在生产环境中使用持久化checkpointers：
 - PostgresSaver：支持异步的PostgreSQL
 - SqliteSaver：用于开发的基于本地文件的存储
 
@@ -82,7 +82,7 @@ checkpointer.setup()  # Creates tables with indexes
 ### 从父图到子图的状态访问
 当子图更新状态时，父图可能无法立即看到这些变化。这是因为每个子图管理着自己的checkpoint命名空间。
 
-修复：对于需要跨图边界传递的数据，请通过Store使用共享状态，或配置子图写入父级checkpoint。
+修复：对于需要跨图边界传递的数据，请<a href='/graph-lang/capablities/stores'>通过Store使用共享状态</a>，或配置子图写入父级checkpoint。
 
 ## 下一步行动
 - 使用<a href='/graph-lang/capablities/checkpointers'>Checkpointers</a>来持久化和检查线程状态。
