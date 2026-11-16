@@ -4,9 +4,78 @@ sidebar_position: 2
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
+import ZoomImage from '@site/src/components/ZoomImage';
+import myImg from './img/checkpointers.png';
 
 # Checkpointers
 
+checkpointer在每个超级步骤中保存图状态的快照，并组织到线程中。使用checkpointer编译一个图，以启用human-in-the-loop工作流、时间旅行调试、容错执行和会话内存。
+<center><ZoomImage src={myImg} alt=''/></center>
+
+:::info
+<small>
+使用agent服务器时agent服务器自动处理checkpoint，你不需要手动实现或配置checkpointers。服务器在幕后为你处理所有持久化基础设施
+</small>
+:::
+
+:::tip
+<small>
+跟踪checkpoint状态，并调试你的agent如何在与LangSmith的会话中恢复。按照跟踪快速入门进行设置。
+</small>
+:::
+
+## 为什么使用checkpointers
+以下功能需要Checkpointer：
+- Human-in-the-loop:：Checkpointer允许人类检查、中断和批准图步骤，从而促进了Human-in-the-loop工作流。这些工作流需要Checkpointers，因为人必须能够在任何时间点查看图的状态，
+  并且图必须能够在人对状态进行任何更新后恢复执行。示例请参见中断。
+- 记忆：Checkpointers允许交互之间的“记忆”。在重复的人类交互(如对话)的情况下，任何后续消息都可以发送到该线程，该线程将保留其对先前消息的记忆。有关如何使用checkpointers添加和管理会话记忆的信息，
+  请参阅<a href='/graph-lang/capablities/memory'>添加记忆</a>。
+- 时间旅行：Checkpointers允许“时间旅行”，允许用户回放之前的图执行，以查看和/或调试特定的图步骤。此外，Checkpointers使得在任意Checkpoints分叉图状态以探索替代轨迹成为可能。
+- 容错：Checkpoint提供容错和错误恢复：如果一个或多个节点在给定的超级步骤失败，你可以从最后一个成功的步骤重新启动图。
+- 待定写入：当一个图节点在给定的超级步骤执行过程中失败时，LangGraph会存储来自在该超级步骤成功完成的任何其他节点的待定checkpoint写入。当你从该超级步骤恢复图执行时，你不会重新运行成功的节点。
+
+
+## 核心概念
+
+### 线程
+
+### checkpoints
+
+## 获取和更新状态
+
+### 获取状态
+
+### 获取状态历史
+
+### 回放
+
+### 更新状态
+
+## 持久化模式
+LangGraph支持三种持久化模式，使你能够平衡性能和数据一致性。你可以在调用任何图执行方法时指定持久化模式：
+```python
+graph.stream(
+    {"input": "test"},
+    durability="sync"
+)
+```
+从最不持久到最持久的持久化模式如下：
+- 退出：LangGraph仅在图执行退出时(成功退出、出现错误或由于人在循环中断)才保留更改。这为长时间运行的图提供了最佳性能，但意味着中间状态不会被保存，因此你无法在执行过程中从系统故障(如进程崩溃)中恢复。
+- 异步：LangGraph在执行下一步时异步保存更改。这提供了良好的性能和持久性，但如果进程在执行过程中崩溃，LangGraph不写入checkpoints的风险很小。
+- 同步：LangGraph在下一步开始之前同步保存更改。这确保了LangGraph在继续执行之前写入每个checkpoints，以牺牲一些性能开销为代价提供了高持久性。
+
+### 新线程上的第一个持久checkpoint
+对于新线程，持久化模式还确定在第一个用户节点执行之前提交哪些checkpoint。内部__start__超级步首先运行；步骤0是在该超级步骤之后写入的循环checkpoint。
+- 退出：在运行结束之前不存在checkpoint。运行过程中的崩溃不会留下线程的记录。
+- 异步：LangGraph在第一个用户节点执行之前开始写入输入checkpoint，但不会等待写入完成。第一个用户节点可以在提交任何checkpoint之前运行。
+- 同步：LangGraph在第一个用户节点执行之前提交输入checkpoint(步骤-1)和步骤0checkpoint。
+
+:::warning
+<small>
+在每种模式下，第一个checkpoint变得持久之前的崩溃会使线程与从未被调用的线程无法区分：get_tuple()在这两种情况下都返回None，invoke(None，config)会引发EmptyInputError。
+如果需要区分“从未接受”和“已接受但丢失”，请在checkpointer之外记录准入，例如在调用invoke之前将发件箱行提交到自己的存储中。
+</small>
+:::
 
 
 
