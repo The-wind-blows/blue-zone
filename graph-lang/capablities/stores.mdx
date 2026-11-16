@@ -54,6 +54,14 @@ memories[-1].dict()
 - created_at：创建此记忆的时间戳
 - updated_at：此记忆更新的时间戳
 
+## 在命名空间中列出项目
+
+在没有查询和过滤器的情况下调用`store.search`(或异步`store.asearch`)，最多返回存储在`namespace_prefix`下的项。当你不需要语义排名时，使用此选项枚举名称空间中的所有内容。
+```python
+# Return up to 100 items stored under ("alice", "memories").
+items = store.search(("alice", "memories"), limit=100)
+```
+
 要安装LangChain软件包，请执行以下操作：
 <Tabs>
   <TabItem value="pip" label="pip" default>
