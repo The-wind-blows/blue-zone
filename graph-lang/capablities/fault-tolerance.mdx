@@ -4,8 +4,130 @@ sidebar_position: 4
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
+import ZoomImage from '@site/src/components/ZoomImage';
+import faultTolerance from './img/fault-tolerance.png';
 
 # 容错
+
+当节点因外部API速度缓慢、瞬时网络错误或未处理的异常而发生故障时，LangGraph为你提供了三种可组合的响应机制：
+- 重试：根据异常类型和回退设置自动重新运行失败的尝试
+- 超时：限制单次尝试的持续时间
+- 错误处理：在所有重试尝试结束后运行恢复功能
+
+使用`set_node_defaults`为所有节点一次配置这些机制，而不是在每次`add_node`调用时重复它们。
+
+这些以固定顺序组成：当节点尝试引发任何异常(包括超时导致的`NodeTimeoutError`)时，重试策略决定是否重试。只有在重试尝试结束后，错误处理程序才会运行。
+
+要在超级步骤边界处干净地停止运行并稍后恢复，请参阅优雅关机。
+
+:::info
+<small>
+每个节点超时和节点级错误处理程序需要langgraph>=1.2。
+</small>
+:::
+<center><ZoomImage src={faultTolerance} alt=''/></center>
+
+## 重试
+重试策略会根据异常类型和回退设置自动重新运行失败的节点尝试。
+将`retry_policy=`传递给`add_node`：
+```python
+from langgraph.types import RetryPolicy
+
+builder.add_node(
+    "call_api",
+    call_api,
+    retry_policy=RetryPolicy(max_attempts=3),
+)
+```
+
+### 默认行为
+默认情况下，`retry_on`使用`default_retry_on`，它对除以下异常(及其子类)之外的任何异常重试：
+- ValueError
+- TypeError
+- ArithmeticError
+- ImportError
+- LookupError
+- NameError
+- SyntaxError
+- RuntimeError
+- ReferenceError
+- StopIteration
+- StopAsyncIteration
+- OSError
+
+对于常见HTTP库(如`requests`和`httpx`)的异常，它只会重试5xx状态代码。默认情况下，`NodeTimeoutError`可重试。
+
+### 参数
+| 参数 | 类型| 默认 | 描述 |
+|---|---|---|---|
+| max_attempts      |  int          |  3     |  最大尝试次数，包括第一次。|
+| initial_interval  |  float        |  0.5   |  第一次重试前的秒数。 |
+| backoff_factor    |  float        |  2.0   |  每次重试后，对间隔应用倍数。|
+| max_interval      |  float        |  128.0 |  重试之间的最长间隔秒数。  |
+| jitter            |  bool         |  True  |  在间隔中添加随机抖动。 |
+| retry_on          |  type[Exception] \| Sequence[type[Exception]] \| Callable[[Exception], bool]    |  default_retry_on  |  要重试的异常，或可调用的返回True的可重试异常。 |
+
+### 自定义重试逻辑
+将可调用或异常类型传递给`retry_on`。导入`default_retry_on`以扩展默认行为：
+```python
+from langgraph.types import RetryPolicy, default_retry_on
+
+def custom_retry_on(exc: BaseException) -> bool:
+    if isinstance(exc, MyCustomError):
+        return False
+    return default_retry_on(exc)
+
+builder.add_node(
+    "call_api",
+    call_api,
+    retry_policy=RetryPolicy(max_attempts=3, retry_on=custom_retry_on),
+)
+```
+
+### 检查重试状态
+使用节点内的执行信息来检查当前的尝试次数。这对于在主调用持续失败时切换到回退非常有用：
+```python
+from langgraph.graph import StateGraph, START, END
+from langgraph.runtime import Runtime
+from langgraph.types import RetryPolicy
+from typing_extensions import TypedDict
+
+class State(TypedDict):
+    result: str
+
+def my_node(state: State, runtime: Runtime) -> State:
+    if runtime.execution_info.node_attempt > 1:
+        return {"result": call_fallback_api()}
+    return {"result": call_primary_api()}
+
+builder = StateGraph(State)
+builder.add_node("my_node", my_node, retry_policy=RetryPolicy(max_attempts=3))
+builder.add_edge(START, "my_node")
+builder.add_edge("my_node", END)
+```
+`execution_info`公开了以下字段：
+| 属性 | 类型 | 描述 |
+|---|---|---|
+| node_attempt            |  int             |   当前尝试次数(1-索引)。第一次尝试1次，第一次重试2次，以此类推。 |
+| node_first_attempt_time |  float \| None   |   第一次尝试开始的Unix时间戳。重试次数持续。                   |
+| thread_id               |  str \| None     |   当前执行的线程ID。None即没有checkpointer。                  |
+| run_id                  |  str \| None     |   当前执行的运行ID。配置中未提供时为无。                       |
+| checkpoint_id           |  str             |   当前执行的checkpoint ID。                                       |
+| task_id                 |  str             |   当前执行的任务ID。                                         |
+
+即使没有重试策略，`executioninfo`也是可用的——`nodeattempt`默认为1。
+
+## 重试边界和幂等性
+重试会从头开始重新运行整个节点函数。这至少为节点执行提供了一次语义：当策略匹配时，LangGraph会再次调用节点。它不会使外部副作用只发生一次。
+```python
+attempt 1:  node starts -> call payment API -> payment succeeds -> process crashes
+attempt 2:  node starts -> call payment API -> payment succeeds again
+```
+
+Checkpoints是在超级步骤边界编写的，而不是在中间函数。失败尝试的图写入将被丢弃。节点期间的副作用(支付、电子邮件、外部写入)都在该边界之外。应用程序代码必须使这些效果幂等。
+
+在中断或崩溃恢复后，同样的重新执行模型也适用。参见重执行和幂等性。要检查节点内的工作，以便恢复可以跳过已完成的单元，请将每个单元包装在一个任务中。
+
 
 要安装LangChain软件包，请执行以下操作：
 <Tabs>
