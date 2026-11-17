@@ -128,19 +128,579 @@ Checkpoints是在超级步骤边界编写的，而不是在中间函数。失败
 
 在中断或崩溃恢复后，同样的重新执行模型也适用。参见重执行和幂等性。要检查节点内的工作，以便恢复可以跳过已完成的单元，请将每个单元包装在一个任务中。
 
+### 使用幂等性密钥保护副作用
+发送一个具有副作用的稳定幂等性密钥，以便提供程序可以消除重复重试。在副作用发生之前，钥匙必须已经持久化。不要在同一节点内生成它，并依赖返回值：
+```python
+attempt 1:  node starts -> generate key K1 -> charge succeeds -> process dies before returning
+attempt 2:  node starts -> state has no key -> generate key K2 -> charge runs again
+```
+节点从未返回，因此K1从未被检查过。重试从上次提交的状态开始，并生成不同的密钥。从已经持久的状态中派生密钥，或者在副作用之前完成的单独步骤中持久化密钥：
+```python
+def charge_customer(state: State) -> dict:
+    # Same order always produces the same key across retries and resumes.
+    idempotency_key = f"charge:{state['order_id']}"
 
-要安装LangChain软件包，请执行以下操作：
-<Tabs>
-  <TabItem value="pip" label="pip" default>
-    ```python
-    pip install -U langchain
-    # Requires Python 3.10+
-    ```
-  </TabItem>
-  <TabItem value="uv" label="uv">
-    ```python
-    uv add langchain
-    # Requires Python 3.10+
-    ```
-  </TabItem>
-</Tabs>
+    provider.charge(
+        customer_id=state["customer_id"],
+        amount=state["amount"],
+        idempotency_key=idempotency_key,
+    )
+
+    # Observability only. A retry must not depend on this return value.
+    return {"last_payment_key": idempotency_key, "charged": True}
+```
+当不存在持久的业务标识时，在产生副作用之前，将生成的密钥持久化在自己的节点中。在进程崩溃时，只有当中间的checkpoints是持久的时，这才有效。为该模式使用同步持久性。
+```python
+import uuid
+
+def reserve_key(state: State) -> dict:
+    # Own node so the key is checkpointed before anything external runs.
+    return {"payment_key": state.get("payment_key") or str(uuid.uuid4())}
+
+def charge_customer(state: State) -> dict:
+    provider.charge(..., idempotency_key=state["payment_key"])
+    return {"charged": True}
+```
+两个要求：
+1. 密钥可以从持久状态复制。新进程中的重试或恢复会重建相同的密钥。
+2. 外部服务尊重这把钥匙。在依赖提供商的文档之前，请先检查它
+
+### 将缺失的确认视为未知
+如果提供者提交并且确认丢失，则即使可能发生了副作用，该图也没有本地记录。稍后使用相同密钥的尝试可以在提供程序进行重复数据消除时避免盲目重复，但结果仍然未知。
+将缺失的本地state视为未知，而不是证明其影响没有发生。在补偿或继续之前，查询提供程序的操作状态。
+
+对于不能在API级别上做为等幂的副作用，将它们从可重试节点中移出。例如，在重试尝试结束后从错误处理程序运行它们，或者从按任务ID进行重复数据消除的单独工作程序运行它们。
+
+
+## 超时
+
+:::info
+<small>
+要求langgraph>=1.2.
+</small>
+:::
+
+`add_node`上的`timeout=`参数限制了单个节点尝试可以运行的时间。为单独的运行和空闲限制传递一个数字（秒）、`timedelta`或`TimeoutPolicy`：
+```python
+from datetime import timedelta
+from langgraph.types import TimeoutPolicy
+
+# Simple wall-clock cap
+builder.add_node("call_model", call_model, timeout=60)
+builder.add_node("call_model", call_model, timeout=timedelta(minutes=2))
+
+# Separate run and idle limits
+builder.add_node(
+    "call_model",
+    call_model,
+    timeout=TimeoutPolicy(run_timeout=120, idle_timeout=30),
+)
+```
+
+:::warning
+<small>
+节点超时仅适用于异步节点。具有超时的同步节点在编译时被拒绝。要包装阻塞I/O，请在异步节点内使用asyncio.To_tothread。
+</small>
+:::
+
+### 运行超时
+`run_timeout`是对单次尝试的严格限制。无论节点活动如何，它都不会刷新：
+```python
+from langgraph.types import TimeoutPolicy
+
+builder.add_node(
+    "call_model",
+    call_model,
+    timeout=TimeoutPolicy(run_timeout=120),
+)
+```
+当超过限制时，LangGraph会引发`NodeTimeoutError`，清除失败尝试中的任何写入，并让重试策略决定是否重试。
+
+### 空闲超时
+`idle_timeout`是一个进度重置上限。只有当节点在指定的持续时间内停止进行可观察的进度时，它才会触发——与run_timeout不同，只要节点产生进度信号，时钟就会重置：
+```python
+builder.add_node(
+    "call_model",
+    call_model,
+    timeout=TimeoutPolicy(idle_timeout=30),
+)
+```
+你可以同时设置run_timeout和idle_timeout。先开火者取消尝试。
+
+#### 进度信号
+在默认的`refresh_on=“auto”`下，空闲时钟在以下任何一种情况下重置：
+- 通过`CONFIG_KEY_SEND`进行状态写入
+- 流输出（产生异步流块）
+- 子任务调度
+- 运行时流写入器调用
+- 来自节点或其后代的任何LangChain回调事件（LLM令牌、工具调用、链开始/结束等）
+
+#### 心跳模式
+将`refresh_on=“heartbeat”`设置为将刷新源缩小到仅显式`runtime.hearbeat()`调用。当你想要一个不会被健谈的下属重置的严格空闲定义时，这很有用：
+```python
+builder.add_node(
+    "call_model",
+    call_model,
+    timeout=TimeoutPolicy(idle_timeout=30, refresh_on="heartbeat"),
+)
+```
+#### 手动心跳
+对于不自然发出进度信号的长时间运行的工作，调用`runtime.hearbeat()`手动重置空闲时钟：
+```python
+from langgraph.graph import StateGraph, START, END
+from langgraph.runtime import Runtime
+from langgraph.types import TimeoutPolicy
+from typing_extensions import TypedDict
+
+class State(TypedDict):
+    result: str
+
+async def long_running_node(state: State, runtime: Runtime) -> State:
+    for batch in fetch_batches():
+        process(batch)
+        runtime.heartbeat()
+    return {"result": "done"}
+
+builder = StateGraph(State)
+builder.add_node(
+    "long_running_node",
+    long_running_node,
+    timeout=TimeoutPolicy(idle_timeout=30, refresh_on="heartbeat"),
+)
+builder.add_edge(START, "long_running_node")
+builder.add_edge("long_running_node", END)
+```
+`runtime.hearbeat()`是空闲定时尝试之外的no操作，因此你可以无条件地调用它。
+
+### NodeTimeoutError
+当超时触发时，LangGraph会通过结构化上下文引发NodeTimeoutError，说明达到了哪个限制：
+|  属性 | 类型 | 描述 |
+|---|---|---|
+| node         | str    |  执行超时的节点的名称  |
+| elapsed      | float  |  超时触发前已过去秒数  |
+| kind         | Literal["idle", "run"]  |  哪个超时触发了       |
+| idle_timeout | float \| None |  配置的空闲超时(秒)(如果有)。 |
+| run_timeout | float \| None  |  配置的运行超时(秒)(如果有)。 |
+
+默认情况下，`NodeTimeoutError`可重试。将超时与重试策略结合使用是开箱即用的——每次新尝试时，超时时钟都会重置，并且在下次重试之前，超时尝试的写入会被清除：
+```python
+from langgraph.types import RetryPolicy, TimeoutPolicy
+
+builder.add_node(
+    "call_model",
+    call_model,
+    timeout=TimeoutPolicy(idle_timeout=30),
+    retry_policy=RetryPolicy(max_attempts=3),
+)
+```
+
+### Send的动态超时
+当使用Send动态调度节点时(例如，在map reduce模式中)，你可以直接在Send上传递超时，以覆盖特定推送的目标节点的静态超时：
+```python
+from langgraph.types import Send, TimeoutPolicy
+
+def fan_out(state: OverallState):
+    return [
+        Send("process_item", {"item": item}, timeout=TimeoutPolicy(idle_timeout=15))
+        for item in state["items"]
+    ]
+```
+如果在发送时省略了超时，则应用目标节点的超时(设置为add_node时间)。这允许你在节点上设置默认超时，并为单个调用收紧超时。
+
+
+## 错误处理
+
+:::info
+<small>
+要求langgraph>=1.2.
+</small>
+:::
+
+错误处理程序在节点失败且所有重试都已用尽后运行。它接收当前状态，并可以使用`Command`更新或路由到其他节点。这对于补偿流(Saga模式)非常有用，你希望优雅地恢复而不是中止整个图。
+
+将`error_handler=`传递给`add_node`：
+```python
+from langgraph.errors import NodeError
+from langgraph.types import Command, RetryPolicy
+from langgraph.graph import StateGraph, START
+from typing_extensions import TypedDict
+
+class State(TypedDict):
+    status: str
+
+def charge_payment(state: State) -> State:
+    raise RuntimeError("payment gateway timeout")
+
+def payment_error_handler(state: State, error: NodeError) -> Command:
+    return Command(
+        update={"status": f"compensated: {error.error}"},
+        goto="finalize",
+    )
+
+def finalize(state: State) -> State:
+    return state
+
+graph = (
+    StateGraph(State)
+    .add_node(
+        "charge_payment",
+        charge_payment,
+        retry_policy=RetryPolicy(max_attempts=3, retry_on=ConnectionError),
+        error_handler=payment_error_handler,
+    )
+    .add_node("finalize", finalize)
+    .add_edge(START, "charge_payment")
+    .compile()
+)
+```
+处理程序仅在重试策略用尽后触发，或者在未配置重试策略的情况下立即触发。重试策略和错误处理程序保持解耦：配置何时重试以及何时独立补偿。
+
+### 节点错误
+错误处理程序通过类型化的`Error:NodeError`参数接收失败上下文，该参数由类型注释注入(与runtime的模式相同：runtime)：
+```python
+from langgraph.errors import NodeError
+
+def my_handler(state: State, error: NodeError) -> Command:
+    print(f"Node {error.node} failed with: {error.error}")
+    return Command(update={"status": "recovered"}, goto="next_step")
+```
+
+`NodeError`是一个冻结的数据类，有两个字段：
+|  属性 | 类型 | 描述 |
+|---|---|---|
+| node       | str            |  执行失败的节点的名称。  |
+| error      | BaseException  |  故障节点引发的异常。    |
+
+`error：NodeError`参数是可选的。不需要失败上下文的处理程序可以使用更简单的签名，如(state)或(state，runtime)。
+
+### 带命令的路由
+
+错误处理程序可以返回一个命令来更新状态并路由到特定节点，从而启用Saga/补偿模式：
+```python
+from langgraph.errors import NodeError
+from langgraph.types import Command, RetryPolicy
+from langgraph.graph import StateGraph, START
+from typing_extensions import TypedDict
+
+class State(TypedDict):
+    status: str
+
+def reserve_inventory(state: State) -> State:
+    return {"status": "reserved"}
+
+def charge_payment(state: State) -> State:
+    raise RuntimeError("payment timeout")
+
+def payment_error_handler(state: State, error: NodeError) -> Command:
+    return Command(
+        update={"status": f"compensated_after_{error.node}: {error.error}"},
+        goto="finalize",
+    )
+
+def finalize(state: State) -> State:
+    return state
+
+graph = (
+    StateGraph(State)
+    .add_node("reserve_inventory", reserve_inventory)
+    .add_node(
+        "charge_payment",
+        charge_payment,
+        retry_policy=RetryPolicy(max_attempts=3, retry_on=ConnectionError),
+        error_handler=payment_error_handler,
+    )
+    .add_node("finalize", finalize)
+    .add_edge(START, "reserve_inventory")
+    .add_edge("reserve_inventory", "charge_payment")
+    .compile()
+)
+```
+`ConnectionError`时`charge_palayment`重试最多3次。如果重试尝试已用尽(或错误不是ConnectionError)，处理程序将通过更新状态和路由来进行补偿，以最终确定，而不是中止图。
+
+
+### 恢复安全故障
+
+:::warning
+<small>
+在节点内引发的`interrupt()`不会路由到错误处理程序。中断使用`GraphBubbleUp`机制暂停human-in-the-loop工作流中的图执行，绕过重试策略和错误处理程序。图表像往常一样暂停。
+</small>
+:::
+
+### 子图故障
+如果一个节点包裹了一个子图，并且子图引发了未处理的异常，则该异常会出现在父节点上。如果父节点有一个错误处理程序，该处理程序将在`error.error`中触发子图的异常。
+
+
+## 恢复策略
+重试和错误处理程序包括自动重试和耗尽后的补偿。节点逻辑中还存在另外两种常见模式：
+|  strategy | Who fixes it | Mechanism |
+|---|---|---|
+| Transient errors                      | system           |  Retry policy on the node  |
+| Recoverable failure after retries     | Developer        |  error_handler/errorHandler（Saga/补偿）    |
+| LLM-recoverable errors                | LLM              |  将错误存储在state中，并使用command发回       |
+| User-fixable errors                   | Human            |  Pause with interrupt()    |
+| Unexpected errors                     | Developer        |  让异常冒出来，运行失败      |
+
+### LLM-recoverable errors 
+当工具调用或解析以模型可以纠正的方式失败时，在节点中捕获该错误，将其写入state，并路由回agent，以便LLM可以进行调整：
+```python
+from typing import Literal
+
+from langgraph.types import Command
+from typing_extensions import TypedDict
+
+
+class ToolError(Exception):
+    """Raised when a tool call fails in a way the model can correct."""
+
+
+class State(TypedDict):
+    tool_call: str
+    tool_result: str | None
+
+
+def run_tool(tool_call: str) -> str:
+    if tool_call == "bad":
+        raise ToolError("invalid args")
+    return f"ok:{tool_call}"
+
+
+def execute_tool(state: State) -> Command[Literal["agent", "execute_tool"]]:
+    try:
+        result = run_tool(state["tool_call"])
+        return Command(update={"tool_result": result}, goto="agent")
+    except ToolError as e:
+        # Let the LLM see what went wrong and try again
+        return Command(
+            update={"tool_result": f"Tool error: {e}"},
+            goto="agent",
+        )
+```
+
+这是应用程序级控制流，而不是`error_handler`。该节点处理已知的故障模式并保持运行状态。
+
+
+### Unexpected errors
+不要抓住你无法处理的失败。如果没有匹配的重试策略或错误处理程序，异常会出现并导致运行失败，因此你可以修复错误：
+```python
+from typing_extensions import TypedDict
+
+
+class EmailAgentState(TypedDict):
+    draft_response: str
+
+
+class EmailService:
+    def send(self, body: str) -> None:
+        raise RuntimeError(f"SMTP unavailable while sending: {body}")
+
+
+email_service = EmailService()
+
+
+def send_reply(state: EmailAgentState) -> EmailAgentState:
+    # Do not catch unexpected failures here. Let them bubble up and fail the run.
+    email_service.send(state["draft_response"])
+    return state
+```
+
+## Graph默认值
+
+:::info
+<small>
+要求langgraph>=1.2.
+</small>
+:::
+不要在每次add_node调用时重复相同的`retry_policy=`、`error_handler=`、`timeout=`或`cache_policy=`，而是使用`set_node_defaults`在一个地方配置图广范的默认值：
+```python
+from langgraph.errors import NodeError
+from langgraph.types import RetryPolicy, TimeoutPolicy
+from langgraph.graph import StateGraph, START
+from typing_extensions import TypedDict
+
+class State(TypedDict):
+    status: str
+
+def default_error_handler(state: State, error: NodeError) -> State:
+    return {"status": f"handled: {error.error}"}
+
+graph = (
+    StateGraph(State)
+    .set_node_defaults(
+        retry_policy=RetryPolicy(max_attempts=3),
+        error_handler=default_error_handler,
+        timeout=TimeoutPolicy(run_timeout=30),
+    )
+    .add_node("step_a", step_a)
+    .add_node("step_b", step_b)
+    .add_edge(START, "step_a")
+    .compile()
+)
+```
+step_a和step_b现在共享相同的重试策略、错误处理程序和超时，没有任何重复。
+
+### 优先级
+
+直接传递给`add_node()`的每个节点值总是覆盖`set_node_defaults()`设置的默认值。默认值在`compile()`时解析，因此你可以在`add_node()`之前或之后以任何顺序调用`set_node_Defaults()`：
+```python
+graph = (
+    StateGraph(State)
+    .set_node_defaults(error_handler=default_error_handler)
+    .add_node("step_a", step_a)                                     # uses default_error_handler
+    .add_node("step_b", step_b, error_handler=custom_error_handler) # uses custom_error_handler
+    .add_edge(START, "step_a")
+    .compile()
+)
+```
+
+### 默认错误处理器
+当每个图运行都映射到外部进程(例如后台作业行)并且任何未处理的节点故障都应将该进程标记为失败，而不对每个`add_node`重复`error_handler=`时，`error_handle`r默认值特别有价值。
+当一个步骤需要自己的逻辑时，每个节点的处理程序仍然优先：
+```python
+from langgraph.errors import NodeError
+from langgraph.graph import StateGraph, START
+from langgraph.types import Command, RetryPolicy
+from typing_extensions import TypedDict
+
+class State(TypedDict):
+    process_id: str
+    status: str
+
+def fetch_data(state: State) -> State:
+    return {"status": "fetched"}
+
+def charge_payment(state: State) -> State:
+    raise RuntimeError("payment timeout")
+
+def finalize(state: State) -> State:
+    return state
+
+def mark_process_failed(state: State, error: NodeError) -> State:
+    # Persist failure on the external process row keyed by process_id.
+    return {"status": f"failed at {error.node}: {error.error}"}
+
+def refund_payment(state: State, error: NodeError) -> Command:
+    return Command(
+        update={"status": f"compensated after {error.node}"},
+        goto="finalize",
+    )
+
+graph = (
+    StateGraph(State)
+    .set_node_defaults(
+        retry_policy=RetryPolicy(max_attempts=3),
+        error_handler=mark_process_failed,
+    )
+    .add_node("fetch_data", fetch_data)  # uses mark_process_failed
+    .add_node(
+        "charge_payment",
+        charge_payment,
+        error_handler=refund_payment,  # overrides the graph-wide default
+    )
+    .add_node("finalize", finalize)
+    .add_edge(START, "fetch_data")
+    .add_edge("fetch_data", "charge_payment")
+    .compile()
+)
+```
+
+如果重试后`fetch_data`失败，则运行`mark_process_failed`。如果`charge_payment`在重试后失败，则会运行`refund_payment`，因为每个节点的处理程序会覆盖默认值。
+
+处理程序接受错误处理中描述的相同(状态，错误：NodeError)签名。如果你需要访问诸如`thread_id`之类的配置值，它还接受`RunnableConfig`作为可选的第三个参数：
+```python
+from langchain_core.runnables import RunnableConfig
+
+def mark_process_failed(
+    state: State, error: NodeError, config: RunnableConfig
+) -> State:
+    thread_id = config["configurable"].get("thread_id")
+    return {"status": f"failed on thread {thread_id}: {error.error}"}
+```
+### 适用性矩阵
+并非所有默认值都适用于所有节点类型。错误处理程序节点(通过`add_node(Error_handler=…)`注册的节点)被排除在某些默认值之外，以防止不安全行为：
+|  set_node_defaults parameter |  Applies to regular nodes | Applies to error-handler nodes  |  Reason |
+|---|---|---|---|
+| retry_policy   | yes  |  yes  |  暂时性故障时应重试处理程序                 |
+| timeout        | yes  |  yes  |  卡住的处理程序应该像卡住的常规节点一样被取消 |
+| error_handler  | yes  |  no   |   处理者绝不catch自己                      |
+| cache_policy   | yes  |  no   |   缓存处理程序结果不安全                    |
+
+### 作用域
+父图上设置的默认值不会被子图继承。每个图都保持自己的默认值。
+
+
+## 优雅关闭
+合作关闭允许你在当前超级步骤完成后停止运行中的图，并保存一个可恢复的checkpoint。这对于处理SIGTERM信号或任何需要在不丢失工作的情况下回收资源的外部主管非常有用。
+
+:::info
+<small>
+要求langgraph>=1.2.
+</small>
+:::
+
+创建一个`RunControl`并将其作为`control=`传递以调用或流式传输。从任何线程调用`request_drain()`以发出运行应该停止的信号：
+```python
+from langgraph.runtime import RunControl
+from langgraph.errors import GraphDrained
+
+control = RunControl()
+
+# In a signal handler or supervisor:
+# control.request_drain("sigterm")
+
+try:
+    result = graph.invoke(inputs, config, control=control)
+except GraphDrained as e:
+    # The graph stopped early and saved a checkpoint.
+    # Resume later with the same config.
+    print(f"Drained: {e.reason}")
+```
+
+### 语义学
+Drain是合作的，在超级步骤之间运行，从不抢占已经运行的工作：
+|  场景 |  行为  |
+|---|---|
+| 节点中期执行                    | 运行至完成。排水将在下一个超级步骤生效。  | 
+| 当前具有重试策略的节点正在重试    | 重试循环运行到耗尽或成功。排水后生效。   |
+| 图与排水口在相同的刻度上自然完成   | 正常返回。检查`control.drain_requested`以区别于正常运行。  |                   |
+| 还有更多的超级步骤                | 提高GraphDrained(原因)。checkouints已保存并可恢复  | 
+| 子图请求排水                     | GraphDrained在父级中冒泡，并在其自己的下一个超步边界处停止。   |
+
+### 排水后恢复
+使用相同的`thread_id`使用invoke(None，config)恢复耗尽的运行：
+
+### 读取节点内的漏极状态
+通过运行时参数访问漏极状态，以在达到超步边界之前调整节点行为：
+```python
+from langgraph.runtime import Runtime
+
+async def my_node(state: State, runtime: Runtime) -> State:
+    if runtime.drain_requested:
+        # Skip expensive work and return a minimal result
+        return {"status": "skipped", "reason": runtime.drain_reason}
+    return {"status": await do_work()}
+```
+
+### SIGTERM hook pattern
+处理流程关闭的推荐模式：
+```python
+import signal
+from langgraph.runtime import RunControl
+from langgraph.errors import GraphDrained
+
+control = RunControl()
+signal.signal(signal.SIGTERM, lambda *_: control.request_drain("sigterm"))
+
+try:
+    result = graph.invoke(inputs, config, control=control)
+except GraphDrained as e:
+    log.info("graph drained: %s", e.reason)
+    # Resume on next startup with the same config
+```
+
+:::info
+<small>
+request_drain()不会取消运行异步任务或终止线程。对于硬上限，将排水与优雅的超时和任务取消相结合。
+</small>
+:::
+
+
