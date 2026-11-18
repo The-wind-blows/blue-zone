@@ -6,6 +6,8 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import ZoomImage from '@site/src/components/ZoomImage';
 import interruptSchema from './img/interrupt-schema.png';
+import langSmith from './img/langsmith.png';
+
 
 # 中断
 
@@ -670,28 +672,361 @@ print(final.output["age"])  # -> 30
 当执行恢复时(在你提供请求的输入后)，运行时会从头重新启动整个节点——它不会从调用中断的确切行恢复。这意味着在中断之前运行的任何代码都将再次执行。
 因此，在处理中断时要遵循一些重要规则，以确保它们按预期运行。
 
+### 不要将interrupt调用包裹在try/except中
+`interrupt`在调用点暂停执行的方式是抛出一个特殊的异常。如果将中断调用包装在`try/except`块中，则会捕获此异常，并且中断不会传递回图。
+- ✅ 将`interrupt`调用与error-prone代码分开
+- ✅ 在`try/except`块中使用特定的异常类型(实际上就是这个异常类型不包括中断抛出的异常，这样就不会阻碍中断异常传递回图)
 
-
-
-
-<details>
-  <summary>完整案例</summary>
-
-</details>
-要安装LangChain软件包，请执行以下操作：
 <Tabs>
-  <TabItem value="pip" label="pip" default>
+  <TabItem value="separating logic" label="separating logic" default>
     ```python
-    pip install -U langchain
-    # Requires Python 3.10+
+    def node_a(state: State):
+        # ✅ Good: interrupting first, then handling
+        # error conditions separately
+        interrupt("What's your name?")
+        try:
+          fetch_data()  # This can fail
+        except Exception as e:
+          print(e)
+        return state
     ```
   </TabItem>
-  <TabItem value="uv" label="uv">
+  <TabItem value="explicit exception handling" label="explicit exception handling">
     ```python
-    uv add langchain
-    # Requires Python 3.10+
+    def node_a(state: State):
+        # ✅ Good: catching specific exception types
+        # will not catch the interrupt exception
+        try:
+            name = interrupt("What's your name?")
+            fetch_data()  # This can fail
+        except NetworkException as e:
+            print(e)
+        return state
     ```
   </TabItem>
 </Tabs>
 
+- 🔴 不要将`interrupt`调用包装在裸`try/except`块中
+```python
+def node_a(state: State):
+    # ❌ Bad: wrapping interrupt in bare try/except
+    # will catch the interrupt exception
+    try:
+        interrupt("What's your name?")
+    except Exception as e:
+        print(e)
+    return state
+```
+
+### 不要在节点内重新排序interrupt调用
+在单个节点中使用多个中断是很常见的，但如果处理不当，可能会导致意外行为。
+
+当一个节点包含多个中断调用时，LangGraph会保留一个特定于执行该节点的任务的恢复值列表。每当执行恢复时，它都会从节点的开头开始。
+对于遇到的每个中断，LangGraph都会检查任务的恢复列表中是否存在匹配的值。匹配严格基于索引，因此节点内中断调用的顺序很重要。
+- ✅ 保持`interrupt`调用在节点执行之间的一致性
+```python
+def node_a(state: State):
+    # ✅ Good: interrupt calls happen in the same order every time
+    name = interrupt("What's your name?")
+    age = interrupt("What's your age?")
+    city = interrupt("What's your city?")
+
+    return {
+        "name": name,
+        "age": age,
+        "city": city
+    }
+```
+- 🔴 不要有条件地跳过节点内的`interrupt`调用
+- 🔴 不要使用在执行过程中不确定的逻辑来循环`interrupt`调用，包括在True验证循环时。请改用条件边(请参阅验证人工输入)
+
+<Tabs>
+  <TabItem value="Skipping interrupts" label="Skipping interrupts" default>
+    ```python
+    def node_a(state: State):
+        # ❌ Bad: conditionally skipping interrupts changes the order
+        name = interrupt("What's your name?")
+
+        # On first run, this might skip the interrupt
+        # On resume, it might not skip it - causing index mismatch
+        if state.get("needs_age"):
+            age = interrupt("What's your age?")
+
+        city = interrupt("What's your city?")
+
+        return {"name": name, "city": city}
+    ```
+  </TabItem>
+  <TabItem value="Looping interrupts" label="Looping interrupts">
+    ```python
+    def node_a(state: State):
+        # ❌ Bad: looping based on non-deterministic data
+        # The number of interrupts changes between executions
+        results = []
+        for item in state.get("dynamic_list", []):  # List might change between runs
+            result = interrupt(f"Approve {item}?")
+            results.append(result)
+
+        return {"results": results}
+    ```
+  </TabItem>
+</Tabs>
+
+总之，中断要有确定性，是否执行、执行顺序都确定，不要循环中断，不要把逻辑写太复杂！！！
+
+### 在interrupt调用中不返回复杂值
+
+根据使用的checkpointer，复杂值可能无法序列化(例如，你无法序列化函数)。为了使你的图适应任何部署，最好的做法是只使用可以合理序列化的值。
+- ✅ 传递简单的JSON可序列化类型以`interrupt`
+- ✅ 用简单值传递字典/对象
+<Tabs>
+  <TabItem value="Simple values" label="Simple values" default>
+    ```python
+    def node_a(state: State):
+        # ✅ Good: passing simple types that are serializable
+        name = interrupt("What's your name?")
+        count = interrupt(42)
+        approved = interrupt(True)
+
+        return {"name": name, "count": count, "approved": approved}
+    ```
+  </TabItem>
+  <TabItem value="structured data" label="structured data">
+    ```python
+    def node_a(state: State):
+        # ✅ Good: passing dictionaries with simple values
+        response = interrupt({
+            "question": "Enter user details",
+            "fields": ["name", "email", "age"],
+            "current_values": state.get("user", {})
+        })
+
+        return {"user": response}
+    ```
+  </TabItem>
+</Tabs>
+
+- 🔴 不要传递函数、类实例或其他复杂对象来`interrupt`
+<Tabs>
+  <TabItem value="functions" label="functions" default>
+    ```python
+    def validate_input(value):
+        return len(value) > 0
+
+    def node_a(state: State):
+        # ❌ Bad: passing a function to interrupt
+        # The function cannot be serialized
+        response = interrupt({
+            "question": "What's your name?",
+            "validator": validate_input  # This will fail
+        })
+        return {"name": response}
+    ```
+  </TabItem>
+  <TabItem value="class instance" label="class instance">
+    ```python
+    class DataProcessor:
+        def __init__(self, config):
+            self.config = config
+
+    def node_a(state: State):
+        processor = DataProcessor({"mode": "strict"})
+ 
+        # ❌ Bad: passing a class instance to interrupt
+        # The instance cannot be serialized
+        response = interrupt({
+            "question": "Enter data to process",
+            "processor": processor  # This will fail
+        })
+        return {"result": response}
+    ```
+  </TabItem>
+</Tabs>
+
+### interrupt前调用的副作用必须幂等
+
+因为`interrupt`是通过重新运行被调用的节点来工作的，所以在`interrupt`之前调用的副作用(理想情况下)应该是幂等的。对于上下文，幂等性意味着可以多次应用相同的操作，而不会在初始执行后改变结果。
+
+例如，你可能有一个API调用来更新节点内部的记录。如果在调用后调用`interrupt`，则当节点恢复时，它将重新运行多次，这可能会覆盖初始更新或创建重复记录。
+- ✅ 在`interrupt`之前使用幂等运算
+- ✅ 在`interrupt`调用后放置副作用
+- ✅ 尽可能将副作用分离到单独的节点
+
+在下面的审批后示例中，只有审批成功时才会出现副作用。如果一个节点在提交副作用后但在完成之前失败，则重试该节点可以重复该效果。在外部系统中使用幂等运算或重复数据消除写入。
+<Tabs>
+  <TabItem value="idempotent operations" label="idempotent operations" default>
+    ```python
+    def node_a(state: State):
+        # ✅ Good: using upsert operation which is idempotent
+        # Running this multiple times will have the same result
+        db.upsert_user(
+            user_id=state["user_id"],
+            status="pending_approval"
+        )
+
+        approved = interrupt("Approve this change?")
+
+        return {"approved": approved}
+    ```
+  </TabItem>
+  <TabItem value="side effects after interupt" label="side effects after interupt">
+    ```python
+    def node_a(state: State):
+        # ✅ Good: placing side effect after the interrupt
+        # Approval gates this side effect; retries still need idempotency
+        approved = interrupt("Approve this change?")
+
+        if approved:
+            db.create_audit_log(
+                user_id=state["user_id"],
+                action="approved"
+            )
+
+        return {"approved": approved}
+    ```
+  </TabItem>
+  <TabItem value="separating into different nodes" label="separating into different nodes">
+    ```python
+    def approval_node(state: State):
+        # ✅ Good: only handling the interrupt in this node
+        approved = interrupt("Approve this change?")
+
+        return {"approved": approved}
+
+    def notification_node(state: State):
+        # ✅ Good: side effect happens in a separate node
+        # Approval gates this side effect; retries still need idempotency
+        if (state.approved):
+            send_notification(
+                user_id=state["user_id"],
+                status="approved"
+            )
+
+        return state
+    ```
+  </TabItem>
+</Tabs>
+
+- 🔴 在`interrupt`之前不要执行非幂等操作
+- 🔴 在未检查记录是否存在的情况下，不要创建新记录
+
+<Tabs>
+  <TabItem value="Creating records" label="Creating records" default>
+    ```python
+    def node_a(state: State):
+        # ❌ Bad: creating a new record before interrupt
+        # This will create duplicate records on each resume
+        audit_id = db.create_audit_log({
+            "user_id": state["user_id"],
+            "action": "pending_approval",
+            "timestamp": datetime.now()
+        })
+
+        approved = interrupt("Approve this change?")
+
+        return {"approved": approved, "audit_id": audit_id}
+    ```
+  </TabItem>
+  <TabItem value="Appending to lists" label="Appending to lists">
+    ```python
+    def node_a(state: State):
+        # ❌ Bad: appending to a list before interrupt
+        # This will add duplicate entries on each resume
+        db.append_to_history(state["user_id"], "approval_requested")
+
+        approved = interrupt("Approve this change?")
+
+        return {"approved": approved}
+    ```
+  </TabItem>
+</Tabs>
+
+### 与作为函数的子图调用一起使用
+
+当在节点内调用子图时，父图将从调用子图并触发`interrupt`的节点开始恢复执行。同样，子图也将从调用`interrupt`的节点的开头恢复。
+```python
+def node_in_parent_graph(state: State):
+    some_code()  # <-- This will re-execute when resumed
+    # Invoke a subgraph as a function.
+    # The subgraph contains an `interrupt` call.
+    subgraph_result = subgraph.invoke(some_input)
+    # ...
+
+def node_in_subgraph(state: State):
+    some_other_code()  # <-- This will also re-execute when resumed
+    result = interrupt("What's your name?")
+    # ...
+```
+
+## 使用interrupt进行调试
+要调试和测试图形，你可以使用静态`interrupt`作为断点，一次逐步执行一个节点的图。静态`interrupt`在节点执行之前或之后的定义点触发。
+你可以在编译图形时通过指定`interrupt_before`和`interrupt_after`来设置这些参数。
+
+:::info
+<small>
+静态`interrupt`不建议用于human-in-the-loop工作流。请改用`interrupr`函数替代。
+</small>
+:::
+
+<Tabs>
+  <TabItem value="At compile time" label="At compile time" default>
+    ```python
+    graph = builder.compile(
+        interrupt_before=["node_a"],
+        interrupt_after=["node_b", "node_c"],
+        checkpointer=checkpointer,
+    )
+
+    # Pass a thread ID to the graph
+    config = {
+        "configurable": {
+            "thread_id": "some_thread"
+        }
+    }
+
+    # Run the graph until the breakpoint
+    graph.invoke(inputs, config=config)
+
+    # Resume the graph
+    graph.invoke(None, config=config)
+    ```
+  </TabItem>
+  <TabItem value="At run time" label="At run time">
+    ```python
+    config = {
+        "configurable": {
+            "thread_id": "some_thread"
+        }
+    }
+
+    # Run the graph until the breakpoint
+    graph.invoke(
+        inputs,
+        interrupt_before=["node_a"],
+        interrupt_after=["node_b", "node_c"],
+        config=config,
+    )
+
+    # Resume the graph
+    graph.invoke(None, config=config)
+    ```
+  </TabItem>
+</Tabs>
+
+1. `graph.invoke`使用`interruptebefore`和`interrupteafter`参数调用。这是一个运行时配置，每次调用都可以更改。
+2. `interrupt_before`指定在执行节点之前应该暂停执行的节点。
+3. `interrupt_after`指定节点执行后应暂停执行的节点。
+4. 该图一直运行，直到到达第一个断点。
+5. 通过为输入传递None来恢复图。这将运行图，直到到达下一个断点。
+
+:::tip
+<small>
+要调试interrupts，请使用LangSmith。
+</small>
+:::
+
+### 使用LangSmith Studio
+在运行图之前，你可以使用LangSmith Studio在UI中设置图形中的静态中断。你还可以使用UI在执行过程中的任何时候检查图状态。
+
+<center><ZoomImage src={langSmith} alt=''/></center>
 

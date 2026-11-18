@@ -7,6 +7,31 @@ import TabItem from '@theme/TabItem';
 
 # 记忆
 
+人工智能应用程序需要记忆来在多个交互中共享上下文。在LangGraph中，你可以添加两种类型的记忆：
+- 添加短期记忆作为agent状态的一部分，以启用多回合对话。
+- 添加长期记忆以跨会话存储用户特定或应用程序级数据。
+
+## 添加短期记忆
+短期记忆(线程级持久性)使agent能够跟踪多轮对话。要添加短期记忆：
+```python
+from langgraph.checkpoint.memory import InMemorySaver  
+from langgraph.graph import StateGraph
+
+checkpointer = InMemorySaver()
+
+builder = StateGraph(...)
+graph = builder.compile(checkpointer=checkpointer)
+
+graph.invoke(
+    {"messages": [{"role": "user", "content": "hi! i am Bob"}]},
+    {"configurable": {"thread_id": "1"}},
+)
+```
+
+
+
+
+
 要安装LangChain软件包，请执行以下操作：
 <Tabs>
   <TabItem value="pip" label="pip" default>
