@@ -4,9 +4,680 @@ sidebar_position: 7
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
+import ZoomImage from '@site/src/components/ZoomImage';
+import interruptSchema from './img/interrupt-schema.png';
 
 # 中断
 
+中断允许你在特定点暂停图执行，并在继续之前等待外部输入。这使得需要外部输入才能继续的human-in-the-loop模式成为可能。当触发中断时，LangGraph使用其持久层保存图状态，并无限期等待，直到你恢复执行。
+
+通过在图节点中的任何点调用interrupt()函数来中断工作。该函数接受向调用者显示的任何JSON可序列化值。当你准备继续时，你可以通过使用Command重新调用图来恢复执行，
+然后Command将成为节点内部interrupt()调用的返回值。
+
+与静态断点(在特定节点之前或之后暂停)不同，中断是动态的：它们可以放置在代码中的任何位置，并且可以根据应用程序逻辑进行条件设置。
+- checkpoint会保留你的位置：checkpointers会写入确切的图状态，以便你以后可以继续，即使在错误状态下也是如此。
+- thread_id是你的指针：设置config= `{ "configurable" : { "thread": ... } }`来告诉checkpointers加载哪个状态。
+- 通过stream.interrupts中断有效载荷：使用事件流(`graph.stream_events(…，version=“v3”)`)时，传递给Interrupt()的值会出现在stream.ininterrupts上，当运行暂停输入时，stream.interrupted为True。
+
+你选择的thread_id实际上是你的持久游标。重复使用它会恢复相同的检查点；使用新值会以空状态启动一个全新的线程。
+
+## 使用中断暂停
+中断函数暂停图执行并向调用者返回一个值。当你在节点内调用中断时，LangGraph会保存当前的图状态，并等待你使用输入恢复执行。
+
+要使用中断，你需要：
+1. 用于持久化图状态的checkpointers（在生产环境中使用持久化checkpointers）
+2. 配置中的线程ID，以便运行时知道从哪个状态恢复
+3. 在你想要暂停的地方调用interrupt()(有效载荷必须是JSON可序列化的)
+```python
+from langgraph.types import interrupt
+
+def approval_node(state: State):
+    # Pause and ask for approval
+    approved = interrupt("Do you approve this action?")
+
+    # When you resume, Command(resume=...) returns that value here
+    return {"approved": approved}
+```
+
+当你调用interrupt时，会发生以下情况：
+1. 图执行在调用中断的确切时间点暂停
+2. 使用checkpointer保存状态，以便稍后可以恢复执行。在生产中，这应该是一个持久的checkpointer（例如由数据库支持）
+3. 当使用事件流时(graph.stream_events(…，版本=“v3”))，或在默认invoke() API的__interrupt__下，将值返回给stream.interrupts上的调用方；它可以是任何JSON可序列化值(字符串、对象、数组等)
+4. Graph无限期等待，直到你返回响应并继续执行
+5. 当你恢复时，响应会传递回节点，成为interrupt()调用的返回值
+
+## 恢复中断
+中断暂停执行后，你可以通过使用包含恢复值的`command`再次调用图来恢复图。恢复值被传递回`interrupt`调用，允许节点继续使用外部输入执行。
+
+驱动可能中断图的推荐方法是事件流——它通过`stream.interrupts`和`stream.ininterrupted`显示中断，并通过`stream.out`显示最终状态。
+```python
+from langgraph.types import Command
+
+# Initial run - hits the interrupt and pauses
+# thread_id is the persistent pointer (stores a stable ID in production)
+config = {"configurable": {"thread_id": "thread-1"}}
+stream = graph.stream_events({"input": "data"}, config=config, version="v3")
+
+# Drain the stream to drive the run; stream.output awaits the final state.
+final = stream.output
+
+# stream.interrupted is True when the run paused for human input, and
+# stream.interrupts contains the payloads passed to interrupt().
+if stream.interrupted:
+    print(stream.interrupts)
+    # > (Interrupt(value='Do you approve this action?'),)
+
+# Resume with the human's response
+# The resume payload becomes the return value of interrupt() inside the node
+resumed = graph.stream_events(Command(resume=True), config=config, version="v3")
+final = resumed.output
+```
+
+:::info
+<small>
+默认的graph.invoke(…)API仍然有效，并在结果[“__interrupt__”]下显示中断。当你不需要流式投影时使用它；否则，更喜欢graph.stream_events(…，版本=“v3”)。
+</small>
+:::
+
+恢复的关键点：
+- 恢复时必须使用与中断发生时相同的线程ID
+- 传递给Command(resume=…)的值将成为interrupt调用的返回值
+- 节点在恢复时从调用interrupt的节点开始重新启动，因此interrupt之前的任何代码都会再次运行
+- 你可以将任何JSON可序列化值作为恢复值传递，并在指定类型化的response_schema时进行验证
+
+:::warning
+<small>
+`Command(resume=…)`是唯一打算作为`invoke()/stream()/stream_events()`输入的命令模式。其他命令参数(update、goto、graph)是为从节点函数返回而设计的。
+不要将Command(update=…)作为输入传递以继续多回合对话，而是传递一个普通的输入字典。
+</small>
+:::
+
+
+## 定义中断响应schema
+中断的`response_schema`参数描述了恢复图时所需的输入。客户端可以使用schema来呈现键入的输入表单。
+
+:::info
+<small>
+中断响应模式要求langgraph>=1.2.12。
+</small>
+:::
+
+传递一个Pydantic模型类、一个来自`typeing_extensions`的`TypedDic`t或一个数据类来验证恢复值。LangGraph将类型转换为JSON Schema，并将其与中断的值有效载荷分开包含在`Interrupt.response_Schema`中。
+该模式在返回给调用者的中断和checkpoint任务中断中可用。
+
+此示例使用LangGraph中断测试中的审批schema：
+```python
+from typing import Any
+
+from pydantic import BaseModel
+from typing_extensions import TypedDict
+
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import START, StateGraph
+from langgraph.types import Command, interrupt
+
+
+class Decision(BaseModel):
+    approved: bool
+    note: str | None = None
+
+
+class State(TypedDict):
+    answer: Any
+
+
+def node(state: State) -> State:
+    answer = interrupt({"question": "approve?"}, response_schema=Decision)
+    return {"answer": answer}
+
+
+graph = (
+    StateGraph(State)
+    .add_node("node", node)
+    .add_edge(START, "node")
+    .compile(checkpointer=InMemorySaver())
+)
+config = {"configurable": {"thread_id": "1"}}
+
+result = graph.invoke({"answer": None}, config)
+pending = result["__interrupt__"][0]
+assert pending.response_schema == Decision.model_json_schema()
+
+result = graph.invoke(Command(resume={"approved": True}), config)
+assert result["answer"] == Decision(approved=True)
+```
+
+对于typed schema，`interrupt()`返回已验证的对象：Pydantic模型实例、`TypedDict`的字典或数据类实例。Pydantic的验证和强制规则适用。
+无效的输入引发`pydantic.ValidationError`；你可以使用相同的线程ID使用更正的`Command(resume=…)`重试。
+
+你还可以将JSON模式字典作为`response_Schema`传递。LangGraph原封不动地公开该字典，但不会对其进行恢复值验证。当你省略`response_schema`时，其值为None，恢复值会通过而不进行模式验证。
+
+Studio将中断响应模式呈现为键入的输入字段，而不是JSON编辑器。Studio组件的此预览使用具有审批、注释和数字金额字段的示例数据。
+
+<center><ZoomImage src={interruptSchema} alt=''/></center>
+
+## 常见模式
+中断解锁的关键是暂停执行并等待外部输入的能力。这对于各种用例都很有用，包括：
+- 审批工作流：在执行关键操作(API调用、数据库更改、财务事务)之前暂停
+- 处理多个中断：在一次调用中恢复多个中断时，将中断ID与恢复值配对
+- 审查和编辑：在继续之前，让人类审查和修改LLM输出或工具调用
+- 中断工具调用：在执行工具调用之前暂停，以便在执行之前查看和编辑工具调用
+- 验证人工输入：在继续下一步验证人工输入之前暂停
+
+
+### human-in-the-loop(HITL)流中断
+
+当使用HITL流构建交互式agent时，你可以使用事件流在处理中断的同时并发地使用消息块和状态快照。
+
+在循环中使用graph.stream_events(…，version=“v3”)返回的类型化投影，直到运行完成：
+- 通过Stream.messages逐个token流式传输AI响应
+- 通过stream.values观察每一步的状态快照
+- 通过stream.interrupted检测中断，并从stream.ininterrupts读取其有效载荷
+- 通过使用Command(Resume=…)再次调用stream_events来恢复执行，并重复直到stream.interrupted为false
+```python
+from langgraph.types import Command
+
+stream_input: dict | Command = initial_input
+
+while True:
+    stream = graph.stream_events(stream_input, config=config, version="v3")
+
+    # Stream LLM message chunks (including any in subgraphs) as they arrive.
+    for message in stream.messages:
+        for token in message.text:
+            display_streaming_content(token)
+
+    # After the run finishes (or pauses), check for interrupts and resume.
+    if not stream.interrupted:
+        final_state = stream.output
+        break
+
+    interrupt_info = stream.interrupts[0].value
+    user_response = get_user_input(interrupt_info)
+    stream_input = Command(resume=user_response)
+```
+- stream.messages：聊天模型输出为内容块；迭代每个message.text以获取token增量。对于嵌套子图，从stream.subgraphs[*].messages中读取消息块。
+- stream.values：每个步骤后的完整状态快照
+- stream.interrupted/stream.ininterrupts：每次运行后，检查图是否暂停；从stream.interrupts读取有效载荷
+- Command(resume=…)：作为下一个stream_events输入传递以继续；循环，直到运行完成而不中断
+
+### 处理多个中断
+当并行分支同时中断时(例如，扇出到多个节点，每个节点都调用interrupt())，你可能需要在一次调用中恢复多个中断。
+当使用单个调用恢复多个中断时，将每个中断ID映射到其恢复值。这确保了每个响应在运行时都与正确的中断配对。
+```python
+from typing import Annotated, TypedDict
+import operator
+
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
+
+
+class State(TypedDict):
+    vals: Annotated[list[str], operator.add]
+
+
+def node_a(state):
+    answer = interrupt("question_a")
+    return {"vals": [f"a:{answer}"]}
+
+
+def node_b(state):
+    answer = interrupt("question_b")
+    return {"vals": [f"b:{answer}"]}
+
+
+graph = (
+    StateGraph(State)
+    .add_node("a", node_a)
+    .add_node("b", node_b)
+    .add_edge(START, "a")
+    .add_edge(START, "b")
+    .add_edge("a", END)
+    .add_edge("b", END)
+    .compile(checkpointer=InMemorySaver())
+)
+
+config = {"configurable": {"thread_id": "1"}}
+
+# Step 1: stream events to drive the run; both parallel nodes hit interrupt() and pause
+stream = graph.stream_events({"vals": []}, config, version="v3")
+_ = stream.output  # drive the stream to completion
+# stream.interrupts contains the pending Interrupt payloads
+print(stream.interrupts)
+# > (Interrupt(value='question_a', id='...'), Interrupt(value='question_b', id='...'))
+
+# Step 2: resume all pending interrupts at once
+resume_map = {
+    i.id: f"answer for {i.value}" for i in stream.interrupts
+}
+resumed = graph.stream_events(Command(resume=resume_map), config, version="v3")
+
+print("Final state:", resumed.output)
+# Final state: {'vals': ['a:answer for question_a', 'b:answer for question_b']}
+```
+
+### 批准或拒绝
+中断最常见的用途之一是在关键操作之前暂停并请求批准。例如，你可能希望要求人员批准API调用、数据库更改或任何其他重要决策。
+```python
+from typing import Literal
+from langgraph.types import interrupt, Command
+
+def approval_node(state: State) -> Command[Literal["proceed", "cancel"]]:
+    # Pause execution; payload shows up on stream.interrupts (with stream_events) or result["__interrupt__"] (with invoke)
+    is_approved = interrupt({
+        "question": "Do you want to proceed with this action?",
+        "details": state["action_details"]
+    })
+
+    # Route based on the response
+    if is_approved:
+        return Command(goto="proceed")  # Runs after the resume payload is provided
+    else:
+        return Command(goto="cancel")
+```
+恢复图时，传递True表示批准，传递False表示拒绝：
+```python
+# To approve
+graph.stream_events(Command(resume=True), config=config, version="v3").output
+
+# To reject
+graph.stream_events(Command(resume=False), config=config, version="v3").output
+```
+
+<details>
+  <summary>完整案例</summary>
+```python
+from typing import Literal, Optional, TypedDict
+
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
+
+
+class ApprovalState(TypedDict):
+    action_details: str
+    status: Optional[Literal["pending", "approved", "rejected"]]
+
+
+def approval_node(state: ApprovalState) -> Command[Literal["proceed", "cancel"]]:
+    # Expose details so the caller can render them in a UI
+    decision = interrupt(
+        {
+            "question": "Approve this action?",
+            "details": state["action_details"],
+        }
+    )
+
+    # Route to the appropriate node after resume
+    return Command(goto="proceed" if decision else "cancel")
+
+
+def proceed_node(state: ApprovalState):
+    return {"status": "approved"}
+
+
+def cancel_node(state: ApprovalState):
+    return {"status": "rejected"}
+
+
+builder = StateGraph(ApprovalState)
+builder.add_node("approval", approval_node)
+builder.add_node("proceed", proceed_node)
+builder.add_node("cancel", cancel_node)
+builder.add_edge(START, "approval")
+builder.add_edge("proceed", END)
+builder.add_edge("cancel", END)
+
+# Use a more durable checkpointer in production
+checkpointer = InMemorySaver()
+graph = builder.compile(checkpointer=checkpointer)
+
+config = {"configurable": {"thread_id": "approval-123"}}
+initial = graph.stream_events(
+    {"action_details": "Transfer $500", "status": "pending"},
+    config=config,
+    version="v3",
+)
+_ = initial.output  # drive the stream to completion
+print(initial.interrupts)  # -> (Interrupt(value={'question': ..., 'details': ...}),)
+
+# Resume with the decision; True routes to proceed, False to cancel
+resumed = graph.stream_events(Command(resume=True), config=config, version="v3")
+print(resumed.output["status"])
+```
+</details>
+
+### 查看和编辑状态
+有时，你希望在继续之前让人工查看和编辑图状态的一部分。这对于纠正LLM、添加缺失的信息或进行调整非常有用。
+```python
+from langgraph.types import interrupt
+
+def review_node(state: State):
+    # Pause and show the current content for review (payload surfaces on stream.interrupts)
+    edited_content = interrupt({
+        "instruction": "Review and edit this content",
+        "content": state["generated_text"]
+    })
+
+    # Update the state with the edited version
+    return {"generated_text": edited_content}
+```
+
+恢复时，提供编辑后的内容：
+```python
+graph.stream_events(
+    Command(resume="The edited and improved text"),  # Value becomes the return from interrupt()
+    config=config,
+    version="v3",
+).output
+```
+
+<details>
+  <summary>完整案例</summary>
+```python
+from typing import TypedDict
+
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
+
+
+class ReviewState(TypedDict):
+    generated_text: str
+
+
+def review_node(state: ReviewState):
+    # Ask a reviewer to edit the generated content
+    updated = interrupt(
+        {
+            "instruction": "Review and edit this content",
+            "content": state["generated_text"],
+        }
+    )
+    return {"generated_text": updated}
+
+
+builder = StateGraph(ReviewState)
+builder.add_node("review", review_node)
+builder.add_edge(START, "review")
+builder.add_edge("review", END)
+
+checkpointer = MemorySaver()
+graph = builder.compile(checkpointer=checkpointer)
+
+config = {"configurable": {"thread_id": "review-42"}}
+initial = graph.stream_events(
+    {"generated_text": "Initial draft"}, config=config, version="v3"
+)
+_ = initial.output  # drive the stream to completion
+print(initial.interrupts)  # -> (Interrupt(value={'instruction': ..., 'content': ...}),)
+
+# Resume with the edited text from the reviewer
+final_state = graph.stream_events(
+    Command(resume="Improved draft after review"),
+    config=config,
+    version="v3",
+)
+print(final_state.output["generated_text"])  # -> "Improved draft after review"
+```
+</details>
+
+
+### 工具中断
+你还可以将中断直接放置在工具函数内。这使得工具本身在每次调用时都会暂停审批，并允许在执行工具调用之前对其进行人工审查和编辑。
+
+首先，定义一个使用interrupt的工具：
+```python
+from langchain.tools import tool
+from langgraph.types import interrupt
+
+@tool
+def send_email(to: str, subject: str, body: str):
+    """Send an email to a recipient."""
+
+    # Pause before sending; payload surfaces on stream.interrupts when using event streaming
+    response = interrupt({
+        "action": "send_email",
+        "to": to,
+        "subject": subject,
+        "body": body,
+        "message": "Approve sending this email?"
+    })
+
+    if response.get("action") == "approve":
+        # Resume value can override inputs before executing
+        final_to = response.get("to", to)
+        final_subject = response.get("subject", subject)
+        final_body = response.get("body", body)
+        return f"Email sent to {final_to} with subject '{final_subject}'"
+    return "Email cancelled by user"
+```
+
+当你希望审批逻辑与工具本身共存时，这种方法非常有用，使其在图形的不同部分之间可重用。LLM可以自然地调用工具，每当调用工具时，中断都会暂停执行，允许你批准、编辑或取消操作。
+
+<details>
+  <summary>完整案例</summary>
+```python
+import sqlite3
+import operator
+from typing import TypedDict, Annotated, Literal
+from langchain.tools import tool
+from langchain_anthropic import ChatAnthropic
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import Command, interrupt
+from langchain.messages import AnyMessage, SystemMessage, ToolMessage
+
+
+class AgentState(TypedDict):
+    messages: Annotated[list[AnyMessage], operator.add]
+
+
+@tool
+def send_email(to: str, subject: str, body: str):
+    """Send an email to a recipient."""
+
+    # Pause before sending; payload surfaces on stream.interrupts when using event streaming
+    response = interrupt({
+        "action": "send_email",
+        "to": to,
+        "subject": subject,
+        "body": body,
+        "message": "Approve sending this email?",
+    })
+
+    if response.get("action") == "approve":
+        final_to = response.get("to", to)
+        final_subject = response.get("subject", subject)
+        final_body = response.get("body", body)
+
+        # Actually send the email (your implementation here)
+        print(f"[send_email] to={final_to} subject={final_subject} body={final_body}")
+        return f"Email sent to {final_to}"
+
+    return "Email cancelled by user"
+
+
+model = ChatAnthropic(model="claude-sonnet-4-6").bind_tools([send_email])
+tools_by_name = {"send_email": send_email}
+
+
+def agent_node(state: AgentState):
+    # LLM may decide to call the tool; interrupt pauses before sending
+    result = model.invoke(state["messages"])
+    return {"messages": [result]}
+
+def tool_node(state: AgentState):
+    """Performs the tool call"""
+    result = []
+    for tool_call in state["messages"][-1].tool_calls:
+        tool = tools_by_name[tool_call["name"]]
+        observation = tool.invoke(tool_call["args"])
+        result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"]))
+    return {"messages": result}
+
+def should_continue(state: AgentState) -> Literal["tool_node", END]:
+    """Decide if we should continue the loop or stop based upon whether the LLM made a tool call"""
+    messages = state["messages"]
+    last_message = messages[-1]
+
+    if last_message.tool_calls:
+        return "tool_node"
+    return END
+
+builder = StateGraph(AgentState)
+builder.add_node("agent", agent_node)
+builder.add_node("tool_node", tool_node)
+
+builder.add_edge(START, "agent")
+builder.add_conditional_edges("agent", should_continue, ["tool_node", END])  # Routes to "tools" or END
+builder.add_edge("tool_node", "agent")  # Loop back after tools
+
+checkpointer = SqliteSaver(
+    sqlite3.connect("tool-approval.db", check_same_thread=False)
+)
+graph = builder.compile(checkpointer=checkpointer)
+
+config = {"configurable": {"thread_id": "email-workflow"}}
+initial = graph.stream_events(
+    {
+        "messages": [
+            {"role": "user", "content": "Send an email to alice@example.com about the meeting"}
+        ]
+    },
+    config=config,
+    version="v3",
+)
+initial.output  # drive the stream to completion
+print(initial.interrupts)  # -> (Interrupt(value={'action': 'send_email', ...}),)
+
+# Resume with approval and optionally edited arguments
+resumed = graph.stream_events(
+    Command(resume={"action": "approve", "subject": "Updated subject"}),
+    config=config,
+    version="v3",
+)
+print(resumed.output["messages"][-1])  # -> Tool result returned by send_email
+```
+</details>
+
+
+### 验证人工输入
+有时，你需要验证来自人类的输入，并在值无效时重新提示。建议的方法是在每次节点调用时调用interrupt()一次，从节点返回并将错误消息存储在状态中，然后使用条件边循环回节点，直到提供有效值。
+
+:::warning
+避免在单个节点内进行True+interrupt()循环。由于节点在每次恢复时都会从头开始重新运行(请参阅中断规则)，因此多次调用interrupt()的循环会导致每次恢复重放所有先前的迭代：
+第一次恢复重放1次迭代，第二次重放2次迭代，以此类推。
+:::
+
+正确的模式：
+- 将重新提示的问题存储在状态中(例如pending_question)。
+- 在节点中，只调用interrupt()一次，从state传递当前问题。
+- 如果答案无效，则返回更新的`pending_question`，以便下一次调用重新提示。
+- 使用`add_conditional_edges`路由回节点，直到收集到有效值。
+```python
+from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
+
+
+class FormState(TypedDict):
+    age: int | None
+    pending_question: str | None
+
+
+def get_age_node(state: FormState):
+    question = state.get("pending_question") or "What is your age?"
+    answer = interrupt(question)  # called exactly once per invocation
+    if isinstance(answer, int) and answer > 0:
+        return {"age": answer, "pending_question": None}
+    return {"pending_question": f"'{answer}' is not a valid age. Please enter a positive number."}
+
+
+def route(state: FormState):
+    return END if state.get("age") is not None else "collect_age"
+
+
+builder = StateGraph(FormState)
+builder.add_node("collect_age", get_age_node)
+builder.add_edge(START, "collect_age")
+builder.add_conditional_edges("collect_age", route)
+```
+
+在这个例子中，无效的答案会导致节点返回更新的问题。在同一个图运行期间，条件边再次调用节点，这个新的调用在interrupt()处暂停。
+在稍后的恢复中，节点仍然从头开始重新启动，因此interrupt()之前的任何代码都会再次运行。请参阅中断规则。
+
+<details>
+  <summary>完整案例</summary>
+```python
+from typing import TypedDict
+
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
+
+
+class FormState(TypedDict):
+    age: int | None
+    pending_question: str | None
+
+
+def get_age_node(state: FormState):
+    question = state.get("pending_question") or "What is your age?"
+    answer = interrupt(question)  # called exactly once per node invocation
+    print(f"I got {answer}")  # runs exactly once per resume
+    if isinstance(answer, int) and answer > 0:
+        return {"age": answer, "pending_question": None}
+    return {"pending_question": f"'{answer}' is not a valid age. Please enter a positive number."}
+
+
+def route(state: FormState):
+    # Loop back to collect_age until we have a valid age
+    return END if state.get("age") is not None else "collect_age"
+
+
+builder = StateGraph(FormState)
+builder.add_node("collect_age", get_age_node)
+builder.add_edge(START, "collect_age")
+builder.add_conditional_edges("collect_age", route)
+
+checkpointer = InMemorySaver()
+graph = builder.compile(checkpointer=checkpointer)
+
+config = {"configurable": {"thread_id": "form-1"}}
+first = graph.stream_events({"age": None, "pending_question": None}, config=config, version="v3")
+_ = first.output  # drive the stream to completion
+print(first.interrupts)  # -> (Interrupt(value='What is your age?', ...),)
+
+# Provide invalid data; the node re-prompts via the conditional edge
+retry = graph.stream_events(Command(resume="thirty"), config=config, version="v3")
+_ = retry.output
+print(retry.interrupts)  # -> (Interrupt(value="'thirty' is not a valid age...", ...),)
+
+# Provide valid data; route() returns END and the graph finishes
+final = graph.stream_events(Command(resume=30), config=config, version="v3")
+print(final.output["age"])  # -> 30
+```
+</details>
+
+
+
+## 中断规则
+当你在节点内调用`interrupt`时，LangGraph会**通过引发异常来暂停执行**，该异常会向运行时发出暂停信号。此异常通过调用堆栈向上传播，并被运行时捕获，运行时通知图保存当前状态并等待外部输入。
+
+当执行恢复时(在你提供请求的输入后)，运行时会从头重新启动整个节点——它不会从调用中断的确切行恢复。这意味着在中断之前运行的任何代码都将再次执行。
+因此，在处理中断时要遵循一些重要规则，以确保它们按预期运行。
+
+
+
+
+
+<details>
+  <summary>完整案例</summary>
+
+</details>
 要安装LangChain软件包，请执行以下操作：
 <Tabs>
   <TabItem value="pip" label="pip" default>
