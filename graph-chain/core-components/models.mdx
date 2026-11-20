@@ -18,7 +18,7 @@ LLM是强大的人工智能工具，可以像人类一样解释和生成文本�
 
 模型是智能体的推理引擎。它们驱动智能体的决策过程，决定调用哪些工具、如何解读结果以及何时给出最终答案。
 
-你所选模型的质量与能力会直接影响代理的基准可靠性与性能。不同模型在不同任务上表现卓越——有的擅长遵循复杂指令，有的长于结构化推理，还有些支持更大的上下文窗口以处理更多信息。
+你所选模型的质量与能力会直接影响agent的基准可靠性与性能。不同模型在不同任务上表现卓越——有的擅长遵循复杂指令，有的长于结构化推理，还有些支持更大的上下文窗口以处理更多信息。
 
 LangChain的标准模型接口让你能够轻松访问多种不同的供应商集成，便于实验和切换模型，以找到最适合你使用场景的方案。
 
@@ -46,7 +46,7 @@ pip install -U "langchain[openai]"
 ```python
 import os
 from langchain.chat_models import init_chat_model
-from langchain_openai import ChatOpenA
+from langchain_openai import ChatOpenAI
 
 os.environ["OPENAI_API_KEY"] = "sk-..." # 推荐使用load_dotenv
 
@@ -99,7 +99,10 @@ model = init_chat_model(
 ```
 
 ### 连接韧性
-LangChain聊天模型自动重试失败的API请求，并进行指数退避。默认情况下，对于网络错误、速率限制（429）和服务器错误（5xx），型号最多重试6次。401（未经授权）或404等客户端错误不会重试。
+LangChain聊天模型自动重试失败的API请求，并进行指数退避。它们重试网络错误、速率限制(429)和服务器错误(5xx)。
+401(未经授权)或404等客户端错误不会重试。
+
+默认情况下，模型重试的次数取决于其集成。例如，ChatOpenAI和ChatAnthropic最多重试2次，ChatGoogleGenerativeAI最多重试6次，而ChatOllama不重试。
 
 你可以在创建模型时调整max_retrys和超时，然后将该实例传递给create_agent、create_deep_agent，或单独调用它：
 ```python
@@ -175,8 +178,9 @@ LangChain聊天模型前缀为“chat”，例如ChatOpenAI（/oss/integrations/
 
 
 ### stream
-大多数模型可以在生成输出内容的同时进行流式传输。通过逐步显示输出，流媒体显著改善了用户体验，特别是对于较长的响应。
-调用stream()返回一个迭代器，该迭代器在生成输出块时生成输出块。你可以使用循环实时处理每个块：
+大多数模型可以在生成输出内容的同时进行流式传输。通过逐步显示输出，流式传输显著改善了用户体验，特别是对于较长的响应。
+
+调用stream()返回一个迭代器，该迭代器在生成时生成chunks。你可以使用循环实时处理每个块：
 
 <Tabs>
   <TabItem value="basic text streaming" label="basic text streaming" default>
@@ -313,7 +317,7 @@ for tool_call in response.tool_calls:
     print(f"Args: {tool_call['args']}")
 ```
 
-绑定用户定义的工具时，模型的响应包括执行工具的请求。当将模型与agent分开使用时，由你执行所请求的工具并将结果返回给模型以用于后续推理。
+绑定用户定义的工具时，模型的响应包括执行工具的请求。**当将模型与agent分开使用时，由你执行所请求的工具并将结果返回给模型**以用于后续推理。
 使用agent时，agent循环将为你处理工具执行循环。
 
 下面，我们将展示一些使用工具调用的常见方法。
